@@ -102,15 +102,20 @@ func (db *Database) Has(key []byte) (bool, error) {
 // Get retrieves the given key if it's present in the key-value store.
 func (db *Database) Get(key []byte) ([]byte, error) {
 	value, closer, err := db.db.Get(key)
+	if closer != nil {
+		defer closer.Close()
+	}
 	if err == pebble.ErrNotFound {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	clonedValue := append([]byte{}, value...)
-	err = closer.Close()
-	return clonedValue, err
+
+	clonedValue := make([]byte, len(value))
+	copy(clonedValue, value)
+
+	return clonedValue, nil
 }
 
 // Put inserts the given value into the key-value store.
