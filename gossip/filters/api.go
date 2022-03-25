@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
 	"math/big"
 	"sync"
 	"time"
@@ -407,6 +408,7 @@ func (api *PublicFilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]*ty
 	if f.crit.BlockHash != nil {
 		// Block filter requested, construct a single-shot filter
 		filter = NewBlockFilter(api.backend, api.config, *f.crit.BlockHash, f.crit.Addresses, f.crit.Topics)
+		log.Info("GetFilterLogs", "id", id, "block", *f.crit.BlockHash, "addresses", f.crit.Addresses, "topics", f.crit.Topics)
 	} else {
 		// Convert the RPC block numbers into internal representations
 		begin := rpc.LatestBlockNumber.Int64()
@@ -419,12 +421,14 @@ func (api *PublicFilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]*ty
 		}
 		// Construct the range filter
 		filter = NewRangeFilter(api.backend, api.config, begin, end, f.crit.Addresses, f.crit.Topics)
+		log.Info("GetFilterLogs", "id", id, "begin", begin, "end", end, "addresses", f.crit.Addresses, "topics", f.crit.Topics)
 	}
 	// Run the filter and return all the logs
 	logs, err := filter.Logs(ctx)
 	if err != nil {
 		return nil, err
 	}
+	log.Info("GetFilterLogs done", "id", id)
 	return returnLogs(logs), nil
 }
 
