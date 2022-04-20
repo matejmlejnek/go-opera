@@ -98,6 +98,16 @@ var (
 		Usage: `Blockchain sync mode ("full" or "snap")`,
 		Value: "full",
 	}
+
+	FastSyncFlagServer = cli.BoolFlag{
+		Name:  "fastsync_s",
+		Usage: "Enables fast synchronization",
+	}
+
+	FastSyncFlagClient = cli.StringFlag{
+		Name:  "fastsync_c",
+		Usage: "Enables fast synchronization",
+	}
 )
 
 type GenesisTemplate struct {

@@ -3,6 +3,7 @@ package launcher
 import (
 	"context"
 	"fmt"
+	"github.com/Fantom-foundation/go-opera/fast_sync"
 	"os"
 	"path"
 	"sort"
@@ -119,6 +120,8 @@ func initFlags() {
 		validatorPubkeyFlag,
 		validatorPasswordFlag,
 		SyncModeFlag,
+		FastSyncFlagClient,
+		FastSyncFlagServer,
 	}
 	legacyRpcFlags = []cli.Flag{
 		utils.NoUSBFlag,
@@ -281,6 +284,15 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 	stack := makeConfigNode(ctx, &cfg.Node)
 
 	chaindataDir := path.Join(cfg.Node.DataDir, "chaindata")
+
+	hostAdress := ctx.GlobalString(FastSyncFlagClient.Name)
+	if hostAdress != "" {
+		err := os.RemoveAll(chaindataDir)
+		if err != nil {
+			//	is ok?
+		}
+	}
+
 	if err := os.MkdirAll(chaindataDir, 0700); err != nil {
 		utils.Fatalf("Failed to create chaindata directory: %v", err)
 	}
@@ -294,6 +306,21 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 		_ = genesisStore.Close()
 	}
 	metrics.SetDataDir(cfg.Node.DataDir)
+
+	if ctx.GlobalBool(FastSyncFlagServer.Name) {
+		//go metrics.CollectProcessMetrics(3 * time.Second)
+		log.Warn("fastsyncflag_Server")
+		fast_sync.InitServer(gdb)
+		//fast_sync.InitServer(engine, dagIndex, gdb, cdb, genesisStore, blockProc)
+	}
+
+	if hostAdress != "" {
+		//go metrics.CollectProcessMetrics(3 * time.Second)
+		log.Warn("fastsyncflag_Client")
+		fast_sync.InitClient(hostAdress, gdb)
+		fmt.Println("Finished client sync")
+		os.Exit(0)
+	}
 
 	valKeystore := valkeystore.NewDefaultFileKeystore(path.Join(getValKeystoreDir(cfg.Node), "validator"))
 	valPubkey := cfg.Emitter.Validator.PubKey

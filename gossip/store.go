@@ -250,6 +250,10 @@ func (s *Store) CaptureEvmKvdbSnapshot() {
 	s.cache.KvdbEvmSnap.Store(newStore)
 }
 
+func (s *Store) GetMainDb() kvdb.Store {
+	return s.mainDB
+}
+
 func (s *Store) LastKvdbEvmSnapshot() *evmstore.Store {
 	if v := s.cache.KvdbEvmSnap.Load(); v != nil {
 		return v.(*evmstore.Store)
