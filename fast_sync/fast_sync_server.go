@@ -1,13 +1,14 @@
 package fast_sync
 
 import (
+	"bufio"
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
 	"github.com/Fantom-foundation/lachesis-base/abft"
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
 	"net"
 	"strings"
 	"time"
@@ -25,6 +26,8 @@ func InitServer(gdb *gossip.Store) {
 	//go testNetxxxVal()
 	//go testEncodeIntToByteAndBack()
 
+	//go testRLP()
+
 	server, error := net.Listen("tcp", "localhost:"+serverSocketPort)
 	if error != nil {
 		log.Error("There was an error starting the server" + error.Error())
@@ -32,6 +35,37 @@ func InitServer(gdb *gossip.Store) {
 	}
 
 	go serverMessageHandling(server, gdb)
+}
+
+func testRLP() {
+	buf := new(bytes.Buffer)
+	//buf := bytes.Buffer{make([]byte, 100)}
+
+	key := []byte("test_val")
+	value := []byte("t_val")
+	itm := Item{key, value}
+
+	//buf.Write([]byte("test"))
+	//bb, err := rlp.EncodeToBytes(itm)
+	//if err != nil {
+	//	fmt.Println("Err: ", err.Error())
+	//}
+	//rlp.Encode(buf, bb)
+	err := rlp.Encode(buf, itm)
+	if err != nil {
+		fmt.Println("err:", err.Error())
+		return
+	}
+
+	//(81c0)
+	fmt.Printf("Test: \n\n(%x)\n\n\n", buf)
+
+	//(c0)
+
+	//reader := bufio.NewReader(buf)
+	//readBuffer :=
+	//reader.Read()
+	//fmt.Printf("(%x)\n", readBuffer[0:n])
 }
 
 //func testEncodeIntToByteAndBack() {
@@ -172,141 +206,89 @@ func connectionHandler(connection net.Conn, gdb *gossip.Store) {
 func sendFileToClient(connection net.Conn, gdb *gossip.Store) {
 	//var currentByte int64 = 0
 	fmt.Println("sending to client")
-	var buffer []byte
+
+	writer := bufio.NewWriter(connection)
 
 	snap, err := gdb.GetMainDb().GetSnapshot()
 	if err != nil {
 		fmt.Println("Error unable to get snapshot")
-		sendError(connection)
+		err = sendError(writer)
+		if err != nil {
+			writer.Write([]byte("Error"))
+		}
 		return
 	}
-
-	//file, err := os.Create(strings.TrimSpace("server_sent.txt"))
-
-	//ppth, err := filepath.Abs(file.Name())
-
-	//fmt.Println("Created file at: " + ppth)
 
 	iterator := snap.NewIterator(nil, nil)
 	defer iterator.Release()
 
 	var i = 0
 
+	var currentLength = 0
+	var itemsToSend []Item
 	for iterator.Next() {
-		//if i > 100000 {
-		//	break
-		//}
+		if i > 1000 {
+			break
+		}
+
 		i += 1
 		if i%100000 == 0 {
 			fmt.Println("Process: ", i)
 		}
-
+		//connection.Write([]byte("testaaaaa"))
 		value := iterator.Value()
 		if value != nil {
 			key := iterator.Key()
 
-			buffer = make([]byte, BUFFER_SIZE)
-			currentBufferByte := COMMUNICATION_HEADER_SIZE
+			var newItem = Item{key, value}
+			itemsToSend = append(itemsToSend, newItem)
+			currentLength += len(value)
+			currentLength += len(key)
 
-			//fmt.Println("len key: ", len(key), " len value: ", len(value))
-			if len(key) > 4000 || len(value) > 4000 {
-				fmt.Println("len key: ", len(key), " len value: ", len(value))
+			if currentLength > RECOMMENDED_MIN_BUNDLE_SIZE {
+				fmt.Println("Sending: ", len(itemsToSend), " items.")
+				err := sendBundle(writer, &itemsToSend, &currentLength)
+				if err != nil {
+					fmt.Println("sending pipe broken: ", err.Error())
+					break
+				}
+				writer.Flush()
 			}
-			err := insertNextVal(&buffer, &key, &value, &currentBufferByte)
-			if err != nil {
-				fmt.Println(err.Error())
-				return
-			}
-
-			//fmt.Println("totalLengthWas: ", currentBufferByte)
-			err = sendMessage(&connection, &buffer, &currentBufferByte)
-			if err != nil {
-				fmt.Println("sending pipe broken")
-				break
-			}
-			//_, err = file.WriteAt(key, currentByte)
-			//if err == io.EOF {
-			//	break
-			//}
-			//currentByte += int64(len(key))
-			//_, err = file.WriteAt(value, currentByte)
-			//if err == io.EOF {
-			//	break
-			//}
-			//currentByte += int64(len(value))
-
-			displayValues(key, value, "serrver")
-
 		} else {
-			log.Error("fastsync-server_value_not_found")
+			fmt.Println("fastsync-server_value_not_found")
 		}
 	}
+
+	if len(itemsToSend) > 0 {
+		err := sendBundle(writer, &itemsToSend, &currentLength)
+		if err != nil {
+			fmt.Println("sending pipe broken end: ", err.Error())
+		}
+		writer.Flush()
+	}
+
+	fmt.Println("sending finished")
 	//	TODO ukoncujici zprava s hashem pro kontrolu
 }
 
-func insertNextVal(buffer *[]byte, key *[]byte, value *[]byte, currentBufferByte *int) error {
-	insertLengthOfItemAndUpdateCurrentBufferByte(buffer, key, currentBufferByte)
+func sendBundle(writer *bufio.Writer,
+	itemsToSend *[]Item, currentLength *int) error {
+	hash := getHashOfKeyValuesInBundle(itemsToSend)
 
-	insertLengthOfItemAndUpdateCurrentBufferByte(buffer, value, currentBufferByte)
+	fmt.Printf("h_new: %x\n", hash)
+	fmt.Printf("items len: %d\n", len(*itemsToSend))
 
-	for i := 0; i < len(*key); i++ {
-		(*buffer)[(*currentBufferByte)+i] = (*key)[i]
-	}
-	*currentBufferByte = (*currentBufferByte) + len(*key)
+	var bundle = BundleOfItems{false, hash, getSignature(&hash), *itemsToSend}
 
-	//insertLengthOfItemAndUpdateCurrentBufferByte(buffer, value, currentBufferByte)
-
-	for k := 0; k < len(*value); k++ {
-		(*buffer)[(*currentBufferByte)+k] = (*value)[k]
-	}
-	*currentBufferByte = *currentBufferByte + len(*value)
-
-	return nil
+	defer func() {
+		*itemsToSend = []Item{}
+		*currentLength = 0
+	}()
+	return rlp.Encode(writer, bundle)
 }
 
-func insertLengthOfItemAndUpdateCurrentBufferByte(buffer *[]byte, arr *[]byte, currentBufferByte *int) {
-	keyLength := uint32(len(*arr))
-	itemLengthArr := convertIntToByteArr(keyLength)
-	(*buffer)[(*currentBufferByte)] = itemLengthArr[0]
-	*currentBufferByte = (*currentBufferByte) + 1
-	(*buffer)[(*currentBufferByte)] = itemLengthArr[1]
-	*currentBufferByte = (*currentBufferByte) + 1
-	(*buffer)[(*currentBufferByte)] = itemLengthArr[2]
-	*currentBufferByte = (*currentBufferByte) + 1
-	(*buffer)[(*currentBufferByte)] = itemLengthArr[3]
-	*currentBufferByte = (*currentBufferByte) + 1
-}
-
-func sendError(connection net.Conn) {
-	ch := CommunicationHeader{3, [4]byte{}}
-	resp := make([]byte, 1)
-	resp[0] = ch.status
-	connection.Write(resp)
-}
-
-func sendMessage(connection *net.Conn, buffer *[]byte, dtLen *int) error {
-	ch := CommunicationHeader{1, convertIntToByteArr(uint32(*dtLen))}
-	(*buffer)[0] = ch.status
-	(*buffer)[1] = ch.dataLength[0]
-	(*buffer)[2] = ch.dataLength[1]
-	(*buffer)[3] = ch.dataLength[2]
-	(*buffer)[4] = ch.dataLength[3]
-	_, err := (*connection).Write(*buffer)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func convertIntToByteArr(toConv uint32) (out [4]byte) {
-	binary.LittleEndian.PutUint32(out[:], toConv)
-	return out
-}
-
-func convertByteArrToInt(buffer *[]byte, startingByte uint32) uint32 {
-	arr := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		arr[i] = (*buffer)[startingByte+uint32(i)]
-	}
-	return binary.LittleEndian.Uint32(arr)
+func sendError(writer *bufio.Writer) error {
+	fmt.Println("sending error")
+	var bundle = BundleOfItems{true, []byte{}, []byte{}, []Item{}}
+	return rlp.Encode(writer, bundle)
 }
