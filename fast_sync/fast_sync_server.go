@@ -5,22 +5,72 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
-	"github.com/Fantom-foundation/lachesis-base/abft"
-	"github.com/Fantom-foundation/lachesis-base/inter/idx"
+	"github.com/Fantom-foundation/go-opera/integration"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"net"
-	"strings"
+	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
 	"time"
 )
 
-//func InitServer(engine *abft.Lachesis, dagIndex *vecmt.Index, gdb *gossip.Store, cdb *abft.Store, genesisStore *genesisstore.Store, blockProc gossip.BlockProc) {
-func InitServer(gdb *gossip.Store) {
-	log.Warn("fastsync-server")
+const serverSocketPort = "7002"
+const RECOMMENDED_MIN_BUNDLE_SIZE = 10000
+const PROGRESS_LOGGING_FREQUENCY = 500000
+const PEER_LIMIT = 1
 
-	//go snapshotService(engine)
+var PeerCounter = SafePeerCounter{v: 0}
 
-	//go testIterateTroughDb(gdb)
+var EstimateGossipSize func() int64 = nil
+
+type SafePeerCounter struct {
+	mu sync.Mutex
+	v  int
+}
+
+func (c *SafePeerCounter) AllowNewConnection() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.v < PEER_LIMIT {
+		c.v++
+		log.Info(fmt.Sprintf("Currently connected peers: %d", c.v))
+		return true
+	} else {
+		log.Info(fmt.Sprintf("Currently connected peers: %d", c.v))
+		return false
+	}
+}
+
+func (c *SafePeerCounter) ReleasedConnection() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.v--
+	log.Info("Currently connected peers: ", c.v)
+}
+
+func InitServer(gdb *gossip.Store, gossipPath string) {
+	EstimateGossipSize = func() int64 {
+		var size int64
+		err := filepath.Walk(gossipPath, func(_ string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() {
+				size += info.Size()
+			}
+			return err
+		})
+		if err != nil {
+			return 0
+		}
+		return size
+	}
+
+	//go snapshotService()
+
+	//go TestIterateTroughDb(gdb)
 
 	//go testFunction()
 	//go testNetxxxVal()
@@ -37,75 +87,7 @@ func InitServer(gdb *gossip.Store) {
 	go serverMessageHandling(server, gdb)
 }
 
-func testRLP() {
-	buf := new(bytes.Buffer)
-	//buf := bytes.Buffer{make([]byte, 100)}
-
-	key := []byte("test_val")
-	value := []byte("t_val")
-	itm := Item{key, value}
-
-	//buf.Write([]byte("test"))
-	//bb, err := rlp.EncodeToBytes(itm)
-	//if err != nil {
-	//	fmt.Println("Err: ", err.Error())
-	//}
-	//rlp.Encode(buf, bb)
-	err := rlp.Encode(buf, itm)
-	if err != nil {
-		fmt.Println("err:", err.Error())
-		return
-	}
-
-	//(81c0)
-	fmt.Printf("Test: \n\n(%x)\n\n\n", buf)
-
-	//(c0)
-
-	//reader := bufio.NewReader(buf)
-	//readBuffer :=
-	//reader.Read()
-	//fmt.Printf("(%x)\n", readBuffer[0:n])
-}
-
-//func testEncodeIntToByteAndBack() {
-//	test := uint32(5)
-//	ofset := 0
-//	arr := convertIntToByteArr(test)
-//
-//	fmt.Println("arr len is: ", len(arr))
-//
-//	res := convertByteArrToInt(&arr, ofset)
-//
-//	fmt.Println("result is: ", res)
-//}
-
-//func testNetxxxVal() {
-//	buffer := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
-//	current := 2
-//	key, value, err := readNextKeyVal(&buffer, &current)
-//	if err != nil {
-//		fmt.Println(err.Error())
-//	} else {
-//		fmt.Println("key: ", key, " value: ", value)
-//
-//	}
-//}
-
-//func testFunction() {
-//	buffer := make([]byte, BUFFER_SIZE)
-//
-//	key := []byte{1, 2, 3, 4}
-//	value := []byte{5, 6, 7, 8}
-//	currentBufferByte := 2
-//	insertNextVal(&buffer, &key, &value, &currentBufferByte)
-//
-//	for i := 0; i < 14; i++ {
-//		fmt.Println("Buffer at [", i, "] : ", buffer[i])
-//	}
-//}
-
-func testIterateTroughDb(gdb *gossip.Store) {
+func TestIterateTroughDb(gdb *gossip.Store) {
 	snap, err := gdb.GetMainDb().GetSnapshot()
 	if err == nil {
 		fmt.Println("Error unable to get snapshot")
@@ -113,18 +95,29 @@ func testIterateTroughDb(gdb *gossip.Store) {
 
 	numberOfItems := 0
 
-	totalBytes := 0
+	totalBytesKey := 0
+	totalBytesValue := 0
 
 	t1 := time.Now()
 
 	iterator := snap.NewIterator(nil, nil)
 	defer iterator.Release()
 	for iterator.Next() {
+		if bytes.Compare(iterator.Key(), integration.FlushIDKey) == 0 {
+			fmt.Println("Skipping flush key")
+			continue
+		}
+		key := iterator.Key()
 		value := iterator.Value()
 		if value != nil {
-			key := string(iterator.Key()) + string(value)
+			// pod 4 000-005 000
+
+			//if numberOfItems >= 4000001 {
+			//	break
+			//}
 			numberOfItems += 1
-			totalBytes += len([]byte(key))
+			totalBytesKey += len(key)
+			totalBytesValue += len(value)
 
 			if len(key) > 300000 || len(value) > 300000 {
 				fmt.Println("len key: ", len(key), " len value: ", len(value))
@@ -133,33 +126,14 @@ func testIterateTroughDb(gdb *gossip.Store) {
 			if (numberOfItems % 1000000) == 0 {
 				fmt.Printf("numb_Items: %d\n", numberOfItems)
 			}
-			if key == "____!!!!" {
-				//fmt.Println("key: " + key)
-			}
 		}
 	}
 	fmt.Printf("numb_Items_total: %d\n", numberOfItems)
 	t2 := time.Now()
-	fmt.Printf("totalBytes: %d\n", totalBytes)
+	fmt.Printf("totalBytesKey: %d\n", totalBytesKey)
+	fmt.Printf("totalBytesValue: %d\n", totalBytesValue)
 
 	fmt.Printf("It took : %f seconds", t2.Sub(t1).Seconds())
-}
-
-func MarkEndOfEpoch(newEpoch idx.Epoch, store *gossip.Store) {
-	fetchData(newEpoch, store)
-}
-
-func fetchData(newEpoch idx.Epoch, store *gossip.Store) {
-
-}
-
-func snapshotService(engine *abft.Lachesis) {
-	//cfg := makeAllConfigs(ctx)
-	//
-	//rawProducer := integration.DBProducer(path.Join(cfg.Node.DataDir, "chaindata"), cfg.Cachescale)
-	//gdb, err := makeRawGossipStore(rawProducer, cfg)
-
-	//g.getSnapshot()
 }
 
 func serverMessageHandling(server net.Listener, gdb *gossip.Store) {
@@ -177,118 +151,176 @@ func serverMessageHandling(server net.Listener, gdb *gossip.Store) {
 }
 
 func connectionHandler(connection net.Conn, gdb *gossip.Store) {
-	var buffer = make([]byte, BUFFER_SIZE)
-	_, err := connection.Read(buffer)
+	defer func() {
+		err := connection.Close()
+		if err != nil {
+			log.Warn("Sync server closing connection: ", err)
+		}
+	}()
+
+	writer := bufio.NewWriter(connection)
+	reader := bufio.NewReader(connection)
+	stream := rlp.NewStream(reader, 0)
+
+	challenge, err := readChallenge(stream)
 	if err != nil {
-		fmt.Println("There is an err reading from connection", err.Error())
+		sendError(writer, err.Error())
+		log.Warn("Error while receiving challenge: ", err)
 		return
 	}
-	fmt.Println("command recieved: " + string(buffer))
-
-	//loop until disconntect
-
-	cleanedBuffer := bytes.Trim(buffer, "\x00")
-	cleanedInputCommandString := strings.TrimSpace(string(cleanedBuffer))
-	//arrayOfCommands := strings.Split(cleanedInputCommandString, " ")
-
-	if cleanedInputCommandString == "get" {
-		sendFileToClient(connection, gdb)
-	} else {
-		_, err = connection.Write([]byte("bad command"))
+	err = sendChallengeAck(writer, challenge)
+	if err != nil {
+		log.Warn("Error while sending ChallengeAck: ", err)
+		return
 	}
 
-	err = connection.Close()
+	//reading command
+	var receivedCommand string
+	receivedCommand, err = readCommand(stream)
 	if err != nil {
-		fmt.Println("err while closing connection")
+		sendError(writer, err.Error())
+		log.Warn("Error while receiving command: ", err)
+		return
+	}
+
+	if receivedCommand == "get" {
+		if PeerCounter.AllowNewConnection() {
+			defer PeerCounter.ReleasedConnection()
+			sendFileToClient(writer, gdb)
+		} else {
+			sendError(writer, "Server is at maximum peer capacity")
+		}
+	} else {
+		sendError(writer, "Bad command: "+receivedCommand)
 	}
 }
 
-func sendFileToClient(connection net.Conn, gdb *gossip.Store) {
-	//var currentByte int64 = 0
+func sendChallengeAck(writer *bufio.Writer, challenge string) error {
+	//	todo public key switch challenge for signature
+	signature := challenge
+
+	return sendOverheadMessage(writer, signature)
+}
+
+func readChallenge(stream *rlp.Stream) (string, error) {
+	return readOverheadMessage(stream)
+}
+
+func readCommand(stream *rlp.Stream) (string, error) {
+	return readOverheadMessage(stream)
+}
+
+func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 	fmt.Println("sending to client")
 
-	writer := bufio.NewWriter(connection)
-
-	snap, err := gdb.GetMainDb().GetSnapshot()
-	if err != nil {
-		fmt.Println("Error unable to get snapshot")
-		err = sendError(writer)
-		if err != nil {
-			writer.Write([]byte("Error"))
-		}
+	snap := gossip.SnapshotOfLastEpoch
+	//if snap == nil {
+	//	var err error
+	//	snap, err = gdb.GetMainDb().GetSnapshot()
+	//	if err != nil {
+	//		log.Warn(err.Error())
+	//		snap = nil
+	//	}
+	//}
+	if snap == nil {
+		err := "Server doesn't have snapshot for current epoch"
+		log.Warn(err)
+		sendError(writer, err)
 		return
 	}
+	err := sendEstimatedSizeMessage(writer)
+	if err != nil {
+		log.Warn(err.Error())
+		return
+	}
+
+	//snap, err := gdb.GetMainDb().GetSnapshot()
+	//if err != nil {
+	//	fmt.Println("Error unable to get snapshot")
+	//	err = sendError(writer)
+	//	if err != nil {
+	//		writer.Write([]byte("Error"))
+	//	}
+	//	return
+	//}
 
 	iterator := snap.NewIterator(nil, nil)
 	defer iterator.Release()
 
 	var i = 0
 
+	var sentItems = 0
+
 	var currentLength = 0
 	var itemsToSend []Item
 	for iterator.Next() {
-		if i > 1000 {
-			break
+		if bytes.Compare(iterator.Key(), integration.FlushIDKey) == 0 {
+			log.Info("Skipping flush key")
+			continue
 		}
 
 		i += 1
-		if i%100000 == 0 {
+		if i%PROGRESS_LOGGING_FREQUENCY == 0 {
 			fmt.Println("Process: ", i)
 		}
-		//connection.Write([]byte("testaaaaa"))
+		key := iterator.Key()
 		value := iterator.Value()
-		if value != nil {
-			key := iterator.Key()
+		if value == nil {
+			log.Warn("Key without value")
+			return
+		}
 
-			var newItem = Item{key, value}
-			itemsToSend = append(itemsToSend, newItem)
-			currentLength += len(value)
-			currentLength += len(key)
+		var newItem = Item{key, value}
+		itemsToSend = append(itemsToSend, newItem)
+		currentLength += len(value)
+		currentLength += len(key)
 
-			if currentLength > RECOMMENDED_MIN_BUNDLE_SIZE {
-				fmt.Println("Sending: ", len(itemsToSend), " items.")
-				err := sendBundle(writer, &itemsToSend, &currentLength)
-				if err != nil {
-					fmt.Println("sending pipe broken: ", err.Error())
-					break
-				}
-				writer.Flush()
+		if currentLength > RECOMMENDED_MIN_BUNDLE_SIZE {
+			sentItems = sentItems + len(itemsToSend)
+			err := sendBundle(writer, &itemsToSend, &currentLength)
+			if err != nil {
+				fmt.Println(fmt.Sprintf("sending pipe broken: %v", err.Error()))
+				break
 			}
-		} else {
-			fmt.Println("fastsync-server_value_not_found")
 		}
 	}
 
 	if len(itemsToSend) > 0 {
+		sentItems = sentItems + len(itemsToSend)
 		err := sendBundle(writer, &itemsToSend, &currentLength)
 		if err != nil {
-			fmt.Println("sending pipe broken end: ", err.Error())
+			log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
 		}
-		writer.Flush()
 	}
 
-	fmt.Println("sending finished")
-	//	TODO ukoncujici zprava s hashem pro kontrolu
+	log.Info(fmt.Sprintf("Sent: %d items.", sentItems))
+}
+
+func sendEstimatedSizeMessage(writer *bufio.Writer) error {
+	var estimatedSize int64 = 0
+	if EstimateGossipSize != nil {
+		estimatedSize = EstimateGossipSize()
+	}
+	log.Info("estimated size: " + strconv.FormatInt(estimatedSize, 10))
+	return sendOverheadMessage(writer, strconv.FormatInt(estimatedSize, 10))
 }
 
 func sendBundle(writer *bufio.Writer,
 	itemsToSend *[]Item, currentLength *int) error {
 	hash := getHashOfKeyValuesInBundle(itemsToSend)
 
-	fmt.Printf("h_new: %x\n", hash)
-	fmt.Printf("items len: %d\n", len(*itemsToSend))
-
-	var bundle = BundleOfItems{false, hash, getSignature(&hash), *itemsToSend}
+	var bundle = BundleOfItems{"", hash, getSignature(&hash), *itemsToSend}
 
 	defer func() {
+		writer.Flush()
 		*itemsToSend = []Item{}
 		*currentLength = 0
 	}()
 	return rlp.Encode(writer, bundle)
 }
 
-func sendError(writer *bufio.Writer) error {
-	fmt.Println("sending error")
-	var bundle = BundleOfItems{true, []byte{}, []byte{}, []Item{}}
-	return rlp.Encode(writer, bundle)
+func sendError(writer *bufio.Writer, error string) {
+	challenge := OverheadMessage{ErrorOccured: true, Payload: error}
+	rlp.Encode(writer, challenge)
+	writer.Flush()
 }

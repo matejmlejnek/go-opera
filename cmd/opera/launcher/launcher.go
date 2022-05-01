@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/fast_sync"
+	"github.com/Fantom-foundation/lachesis-base/abft"
+	"github.com/Fantom-foundation/lachesis-base/inter/idx"
+	"github.com/Fantom-foundation/lachesis-base/kvdb"
 	"os"
 	"path"
 	"sort"
@@ -284,23 +287,97 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 	stack := makeConfigNode(ctx, &cfg.Node)
 
 	chaindataDir := path.Join(cfg.Node.DataDir, "chaindata")
-
-	hostAdress := ctx.GlobalString(FastSyncFlagClient.Name)
-	if hostAdress != "" {
-		err := os.RemoveAll(chaindataDir)
-		if err != nil {
-			//	is ok?
-		}
-	}
-
 	if err := os.MkdirAll(chaindataDir, 0700); err != nil {
 		utils.Fatalf("Failed to create chaindata directory: %v", err)
 	}
+
 	var g *genesis.Genesis
 	if genesisStore != nil {
 		gv := genesisStore.Genesis()
 		g = &gv
 	}
+
+	hostAdress := ctx.GlobalString(FastSyncFlagClient.Name)
+	if hostAdress != "" {
+		//fast_sync.TestIterateTroughDb(gdb)
+		//os.Exit(0)
+
+		err := os.RemoveAll(chaindataDir)
+		if err != nil {
+			//	is ok?
+		}
+		if err = os.MkdirAll(chaindataDir, 0700); err != nil {
+			utils.Fatalf("Failed to create chaindata directory: %v", err)
+		}
+
+		producer := integration.DBProducer(chaindataDir, cfg.cachescale)
+		_, _, gossipDb, cdb, _ := integration.MakeEngine(producer, g, cfg.AppConfigs())
+
+		log.Info("fastsyncflag_Client")
+		fast_sync.DownloadDataFromServer(hostAdress, gossipDb)
+		fmt.Println("Finished client sync")
+
+		err = cdb.Close()
+		if err != nil {
+			utils.Fatalf("Unable to close lachesis db: %v", err)
+		}
+		gossipDb.Close()
+
+		gossipDb, err = makeRawGossipStore(producer, cfg)
+		if err != nil {
+			utils.Fatalf("Failed to open 'gossip' database: %v", err)
+		}
+
+		mustOpenDB := func(producer kvdb.DBProducer, name string) kvdb.DropableStore {
+			db, err := producer.OpenDB(name)
+			if err != nil {
+				utils.Fatalf("Failed to open '%s' database: %v", name, err)
+			}
+			return db
+		}
+		gdbEpoch := gossipDb.GetEpoch()
+		gdbValidators := gossipDb.GetValidators()
+		gossipDb.Close()
+
+		log.Info(fmt.Sprintf("Loaded Epoch: ", gdbEpoch))
+		log.Info(fmt.Sprintf("Loaded Validators: ", gdbValidators))
+
+		cMainDb := mustOpenDB(producer, "lachesis")
+		//remove lachesis db
+		_ = cMainDb.Close()
+		cMainDb.Drop()
+
+		log.Info("Recreating lachesis db")
+		cMainDb = mustOpenDB(producer, "lachesis")
+		cGetEpochDB := func(epoch idx.Epoch) kvdb.DropableStore {
+			log.Info("Fetching lachesis-", epoch)
+			return mustOpenDB(producer, fmt.Sprintf("lachesis-%d", epoch))
+		}
+
+		panics := func(name string) func(error) {
+			return func(err error) {
+				log.Crit(fmt.Sprintf("%s error", name), "err", err)
+			}
+		}
+
+		log.Info("Apllying genesis")
+		concensusDb := abft.NewStore(cMainDb, cGetEpochDB, panics("Lachesis store"), cfg.LachesisStore)
+		err = concensusDb.ApplyGenesis(&abft.Genesis{
+			Epoch:      gdbEpoch,
+			Validators: gdbValidators,
+		})
+		if err != nil {
+			log.Crit("failed to init consensus database: " + err.Error())
+		}
+		_ = concensusDb.Close()
+		log.Info("Apllied genesis")
+
+		err = clearDirtyFlags(producer)
+		if err != nil {
+			log.Crit("failed to clean dirty flags" + err.Error())
+		}
+	}
+
 	engine, dagIndex, gdb, cdb, blockProc := integration.MakeEngine(integration.DBProducer(chaindataDir, cfg.cachescale), g, cfg.AppConfigs())
 	if genesisStore != nil {
 		_ = genesisStore.Close()
@@ -308,18 +385,8 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 	metrics.SetDataDir(cfg.Node.DataDir)
 
 	if ctx.GlobalBool(FastSyncFlagServer.Name) {
-		//go metrics.CollectProcessMetrics(3 * time.Second)
-		log.Warn("fastsyncflag_Server")
-		fast_sync.InitServer(gdb)
-		//fast_sync.InitServer(engine, dagIndex, gdb, cdb, genesisStore, blockProc)
-	}
-
-	if hostAdress != "" {
-		//go metrics.CollectProcessMetrics(3 * time.Second)
-		log.Warn("fastsyncflag_Client")
-		fast_sync.InitClient(hostAdress, gdb)
-		fmt.Println("Finished client sync")
-		os.Exit(0)
+		log.Info("fastsyncflag_Server")
+		fast_sync.InitServer(gdb, path.Join(chaindataDir, "gossip"))
 	}
 
 	valKeystore := valkeystore.NewDefaultFileKeystore(path.Join(getValKeystoreDir(cfg.Node), "validator"))

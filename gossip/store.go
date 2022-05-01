@@ -201,10 +201,10 @@ func (s *Store) Commit() error {
 		es.FlushHeads()
 		es.FlushLastEvents()
 	}
-	return s.flushDBs()
+	return s.FlushDBs()
 }
 
-func (s *Store) flushDBs() error {
+func (s *Store) FlushDBs() error {
 	s.prevFlushTime = time.Now()
 	flushID := bigendian.Uint64ToBytes(uint64(s.prevFlushTime.UnixNano()))
 	return s.dbs.Flush(flushID)

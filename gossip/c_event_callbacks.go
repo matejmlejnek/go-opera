@@ -2,6 +2,7 @@ package gossip
 
 import (
 	"errors"
+	"github.com/Fantom-foundation/lachesis-base/kvdb"
 	"math/big"
 	"sync/atomic"
 
@@ -272,5 +273,8 @@ func (s *Service) commit(epochSealing bool) {
 	_ = s.store.Commit()
 	if epochSealing {
 		s.store.CaptureEvmKvdbSnapshot()
+		SnapshotOfLastEpoch = s.store.snapshotedDB.Snapshot
 	}
 }
+
+var SnapshotOfLastEpoch kvdb.Snapshot = nil

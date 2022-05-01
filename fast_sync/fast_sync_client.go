@@ -6,112 +6,190 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
-	"github.com/Fantom-foundation/lachesis-base/kvdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"io"
+	"math/rand"
 	"net"
 	"reflect"
+	"strconv"
 )
-
-//7700000 na 8192
-//const BUFFER_SIZE = 8192
-const BUFFER_SIZE = 1024
-const serverSocketPort = "7002"
-const RECOMMENDED_MIN_BUNDLE_SIZE = 10000
 
 type Item struct {
 	Key   []byte
 	Value []byte
 }
 
+type OverheadMessage struct {
+	ErrorOccured bool
+	Payload      string
+	//	progress? total size then estimate
+}
+
 type BundleOfItems struct {
-	Error     bool
-	Hash      []byte
-	Signature []byte
-	Data      []Item
+	ErrorMessage string
+	Hash         []byte
+	Signature    []byte
+	Data         []Item
 }
 
-func InitClient(hostAdress string, gdb *gossip.Store) {
-	log.Warn("fastsync-client")
-	mainDB := gdb.GetMainDb()
-	attemptConnect(hostAdress, &mainDB)
-}
-
-func attemptConnect(adress string, mainDB *kvdb.Store) {
+func DownloadDataFromServer(address string, gdb *gossip.Store) {
 	//get port and ip address to dial
-	connection, err := net.Dial("tcp", adress+":"+serverSocketPort)
+	connection, err := net.Dial("tcp", address+":"+serverSocketPort)
 	if err != nil {
 		log.Error(err.Error())
 	}
-
-	getDataFromServer(connection, mainDB)
+	getDataFromServer(connection, gdb)
 }
 
-func getDataFromServer(connection net.Conn, mainDB *kvdb.Store) {
-	//var currentByte int64 = 0
+func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
+	mainDB := gdb.GetMainDb()
 
-	//readBuffer := make([]byte, BUFFER_SIZE)
-
-	helloMessage := []byte("get")
-	fmt.Println("sending message: ", string(helloMessage))
-	_, err := connection.Write(helloMessage)
-	if err != nil {
-		return
-	}
-
+	writer := bufio.NewWriter(connection)
 	reader := bufio.NewReader(connection)
-
 	stream := rlp.NewStream(reader, 0)
 
-	for {
-		e := BundleOfItems{}
-		err = stream.Decode(&e)
-		if err == io.EOF {
-			fmt.Println("EOF end of stream")
-			break
-		} else if err != nil {
-			fmt.Println("Stream Error: ", err.Error())
-			break
-		}
-
-		fmt.Println("Decoded Bundle happyyy")
-
-		if e.Error {
-			fmt.Println("Error from parsed object")
-			break
-		}
-
-		fmt.Println("ReceivedBundle: ", string(e.Hash))
-		fmt.Println("ReceivedBundle: ", string(e.Signature))
-		fmt.Println("Received: ", len(e.Data), " items")
-		//fmt.Println("Before signatures")
-		//
-		//err := verifySignatures(e)
-		//if err != nil {
-		//	fmt.Println(err.Error())
-		//	break
-		//}
-		//
-		//fmt.Println("About to put data")
-		//
-		//for i := range e.data {
-		//	err = (*mainDB).Put(e.data[i].key, e.data[i].value)
-		//	if err != nil {
-		//		fmt.Println("db: ", err)
-		//		break
-		//	}
-		//}
-		//
-		//fmt.Println("Saved: ", len(e.data))
+	err := sendChallenge(writer)
+	if err != nil {
+		log.Crit(fmt.Sprintf("\"Sending challenge:: %v", err))
 	}
+
+	//pubKey, err := readChallengeAck(stream)
+	_, err = readChallengeAck(stream)
+	if err != nil {
+		log.Crit(fmt.Sprintf("Read challenge ack: %v", err))
+	}
+
+	err = sendGetCommand(writer)
+	if err != nil {
+		log.Crit(fmt.Sprintf("Sending get command: %v", err))
+	}
+
+	bytesSizeEstimate, err := readEstimatedSizeMessage(stream)
+	if err != nil {
+		log.Crit(fmt.Sprintf("Server response on command: %v", err))
+	}
+	log.Info("Estimated size: " + strconv.FormatUint(bytesSizeEstimate, 10))
+
+	var progress uint64 = 0
+	loggingThreashold := 0
+
+	var currentWrittenBytes uint64 = 0
+	receivedItems := 0
+	for {
+		bundle := BundleOfItems{}
+		err := readBundle(stream, &bundle)
+		if err != nil {
+			if err == io.EOF {
+				log.Info("EOF - end of stream")
+				break
+			} else {
+				log.Crit(fmt.Sprintf("Reading bundle: %v", err))
+			}
+		}
+
+		err = verifySignatures(&bundle)
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+
+		for i := range bundle.Data {
+			currentWrittenBytes = currentWrittenBytes + uint64(len(bundle.Data[i].Key)) + uint64(len(bundle.Data[i].Value))
+			err = mainDB.Put(bundle.Data[i].Key, bundle.Data[i].Value)
+			receivedItems = receivedItems + 1
+
+			if err != nil {
+				log.Crit(fmt.Sprintf("Insert into db: %v", err))
+			}
+		}
+
+		gdb.GetBlockEpochState()
+
+		err = gdb.FlushDBs()
+		if err != nil {
+			log.Crit("Gossip flush: ", err)
+		}
+
+		tmp := receivedItems / PROGRESS_LOGGING_FREQUENCY
+		if tmp > loggingThreashold {
+			loggingThreashold = tmp
+			if progress < 99 {
+				progress = (currentWrittenBytes * 100) / bytesSizeEstimate
+				if progress > 99 {
+					progress = 99
+				}
+			}
+			str := fmt.Sprintf("Progress: ~ %d%%", progress)
+			log.Info(str)
+		}
+	}
+	log.Info("Progress: 100%")
+	fmt.Println("Saved: ", receivedItems, " items.")
+
+	err = gdb.FlushDBs()
+	if err != nil {
+		log.Crit("Flush db: ", err)
+	}
+}
+
+func readEstimatedSizeMessage(stream *rlp.Stream) (uint64, error) {
+	estimatedSize, err := readOverheadMessage(stream)
+	if err != nil {
+		return 0, err
+	}
+	parseUint, err := strconv.ParseUint(estimatedSize, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return parseUint, nil
+}
+
+func getSignature(hash *[]byte) []byte {
+	//TODO signatur
+	return []byte{1, 2, 3}
+}
+
+func getHashOfKeyValuesInBundle(bundle *[]Item) []byte {
+	hasher := sha512.New()
+	_ = rlp.Encode(hasher, *bundle)
+	return hasher.Sum(nil)
+}
+
+func readBundle(stream *rlp.Stream, b *BundleOfItems) error {
+	err := stream.Decode(b)
+	if err != nil {
+		return err
+	}
+	if len(b.ErrorMessage) > 0 {
+		return errors.New("Connection stream: " + b.ErrorMessage)
+	}
+	return nil
+}
+
+func sendGetCommand(writer *bufio.Writer) error {
+	return sendOverheadMessage(writer, "get")
+}
+
+func readChallengeAck(stream *rlp.Stream) (string, error) {
+	payload, err := readOverheadMessage(stream)
+	if err != nil {
+		return "", err
+	}
+	// todo pub key from original challenge and payload
+
+	return payload, nil
+}
+
+func sendChallenge(writer *bufio.Writer) error {
+	randomNum := strconv.FormatInt(rand.Int63(), 10)
+	return sendOverheadMessage(writer, randomNum)
 }
 
 func verifySignatures(bundle *BundleOfItems) error {
 	hash := getHashOfKeyValuesInBundle(&(bundle.Data))
 
-	fmt.Printf("h1: %x\n", hash)
-	fmt.Printf("h2: %x\n", bundle.Hash)
+	//fmt.Printf("h1: %x\n", hash)
+	//fmt.Printf("h2: %x\n", bundle.Hash)
 
 	if !reflect.DeepEqual(hash, bundle.Hash) {
 		return errors.New("Hash not matching original")
@@ -126,45 +204,29 @@ func verifySignatures(bundle *BundleOfItems) error {
 	return nil
 }
 
-func getSignature(hash *[]byte) []byte {
-	//TODO signatur
-	return []byte{1, 2, 3}
+func readOverheadMessage(stream *rlp.Stream) (string, error) {
+	e := OverheadMessage{}
+	err := stream.Decode(&e)
+	if err != nil {
+		return "", err
+	}
+
+	if e.ErrorOccured {
+		return "", errors.New("Error: " + e.Payload)
+	}
+
+	return e.Payload, nil
 }
 
-func getHashOfKeyValuesInBundle(bundle *[]Item) []byte {
-	hasher := sha512.New()
-	_ = rlp.Encode(hasher, *bundle)
-	return hasher.Sum(nil)
-
-	//h2 := sha512.New()
-	//for i := range bundle.data {
-	//	h2.Write(bundle.data[i].key)
-	//	h2.Write(bundle.data[i].value)
-	//}
-	//return h2.Sum(nil)
-}
-
-func displayValues(key []byte, value []byte, s string) {
-	//fmt.Print(s, ": ")
-	//for i := range key {
-	//	fmt.Print(key[i], ", ")
-	//}
-	//fmt.Println("")
-	//
-	//fmt.Print(s, ": ")
-	//for i := range value {
-	//	fmt.Print(value[i], ", ")
-	//}
-	//fmt.Println("")
-
-	//hash kontrola
-	//h1 := sha1.New()
-	//h1.Write(key)
-	//bs1 := h1.Sum(nil)
-	//
-	//h2 := sha1.New()
-	//h2.Write(value)
-	//bs2 := h2.Sum(nil)
-	//
-	//fmt.Printf("%s : %x %x\n", s, bs1, bs2)
+func sendOverheadMessage(writer *bufio.Writer, message string) error {
+	challenge := OverheadMessage{ErrorOccured: false, Payload: message}
+	err := rlp.Encode(writer, challenge)
+	if err != nil {
+		return err
+	}
+	err = writer.Flush()
+	if err != nil {
+		return err
+	}
+	return nil
 }
