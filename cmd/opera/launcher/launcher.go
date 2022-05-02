@@ -3,7 +3,7 @@ package launcher
 import (
 	"context"
 	"fmt"
-	"github.com/Fantom-foundation/go-opera/fast_sync"
+	"github.com/Fantom-foundation/go-opera/direct_sync"
 	"github.com/Fantom-foundation/lachesis-base/abft"
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
 	"github.com/Fantom-foundation/lachesis-base/kvdb"
@@ -123,8 +123,8 @@ func initFlags() {
 		validatorPubkeyFlag,
 		validatorPasswordFlag,
 		SyncModeFlag,
-		FastSyncFlagClient,
-		FastSyncFlagServer,
+		DirectSyncFlagClient,
+		DirectSyncFlagServer,
 	}
 	legacyRpcFlags = []cli.Flag{
 		utils.NoUSBFlag,
@@ -297,27 +297,25 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 		g = &gv
 	}
 
-	hostAdress := ctx.GlobalString(FastSyncFlagClient.Name)
+	hostAdress := ctx.GlobalString(DirectSyncFlagClient.Name)
 	if hostAdress != "" {
-		//fast_sync.TestIterateTroughDb(gdb)
+		//direct_sync.TestIterateTroughDb(gdb)
 		//os.Exit(0)
 
-		err := os.RemoveAll(chaindataDir)
-		if err != nil {
-			//	is ok?
-		}
-		if err = os.MkdirAll(chaindataDir, 0700); err != nil {
+		_ = os.RemoveAll(chaindataDir)
+
+		if err := os.MkdirAll(chaindataDir, 0700); err != nil {
 			utils.Fatalf("Failed to create chaindata directory: %v", err)
 		}
 
 		producer := integration.DBProducer(chaindataDir, cfg.cachescale)
 		_, _, gossipDb, cdb, _ := integration.MakeEngine(producer, g, cfg.AppConfigs())
 
-		log.Info("fastsyncflag_Client")
-		fast_sync.DownloadDataFromServer(hostAdress, gossipDb)
+		log.Info("directsyncclient")
+		direct_sync.DownloadDataFromServer(hostAdress, gossipDb)
 		fmt.Println("Finished client sync")
 
-		err = cdb.Close()
+		err := cdb.Close()
 		if err != nil {
 			utils.Fatalf("Unable to close lachesis db: %v", err)
 		}
@@ -384,9 +382,9 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 	}
 	metrics.SetDataDir(cfg.Node.DataDir)
 
-	if ctx.GlobalBool(FastSyncFlagServer.Name) {
-		log.Info("fastsyncflag_Server")
-		fast_sync.InitServer(gdb, path.Join(chaindataDir, "gossip"))
+	if ctx.GlobalBool(DirectSyncFlagServer.Name) {
+		log.Info("directsyncserver")
+		direct_sync.InitServer(gdb, path.Join(chaindataDir, "gossip"))
 	}
 
 	valKeystore := valkeystore.NewDefaultFileKeystore(path.Join(getValKeystoreDir(cfg.Node), "validator"))

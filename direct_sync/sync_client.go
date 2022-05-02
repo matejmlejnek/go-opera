@@ -1,4 +1,4 @@
-package fast_sync
+package direct_sync
 
 import (
 	"bufio"
@@ -27,10 +27,10 @@ type OverheadMessage struct {
 }
 
 type BundleOfItems struct {
-	ErrorMessage string
-	Hash         []byte
-	Signature    []byte
-	Data         []Item
+	Finished  bool
+	Hash      []byte
+	Signature []byte
+	Data      []Item
 }
 
 func DownloadDataFromServer(address string, gdb *gossip.Store) {
@@ -71,21 +71,24 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	}
 	log.Info("Estimated size: " + strconv.FormatUint(bytesSizeEstimate, 10))
 
-	var progress uint64 = 0
-	loggingThreashold := 0
+	//var progress uint64 = 0
+	lastLogThreshold := 0
 
-	var currentWrittenBytes uint64 = 0
+	//var currentWrittenBytes uint64 = 0
 	receivedItems := 0
 	for {
 		bundle := BundleOfItems{}
 		err := readBundle(stream, &bundle)
 		if err != nil {
 			if err == io.EOF {
-				log.Info("EOF - end of stream")
-				break
+				log.Crit("EOF - end of stream")
 			} else {
 				log.Crit(fmt.Sprintf("Reading bundle: %v", err))
 			}
+		}
+
+		if bundle.Finished {
+			break
 		}
 
 		err = verifySignatures(&bundle)
@@ -94,7 +97,14 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		}
 
 		for i := range bundle.Data {
-			currentWrittenBytes = currentWrittenBytes + uint64(len(bundle.Data[i].Key)) + uint64(len(bundle.Data[i].Value))
+			//kk, err1 := rlp.EncodeToBytes(bundle.Data[i].Key)
+			//vv, err2 := rlp.EncodeToBytes(bundle.Data[i].Value)
+			//if err1 != nil || err2 != nil {
+			//currentWrittenBytes = currentWrittenBytes + uint64(len(bundle.Data[i].Key)) + uint64(len(bundle.Data[i].Value))
+			//} else {
+			//currentWrittenBytes = currentWrittenBytes + uint64(len(kk)) + uint64(len(vv))
+			//}
+
 			err = mainDB.Put(bundle.Data[i].Key, bundle.Data[i].Value)
 			receivedItems = receivedItems + 1
 
@@ -103,33 +113,41 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 			}
 		}
 
-		gdb.GetBlockEpochState()
+		tmp := receivedItems / PROGRESS_LOGGING_FREQUENCY
+		if tmp > lastLogThreshold {
+			lastLogThreshold = tmp
 
+			log.Info(fmt.Sprintf("Received %d", receivedItems))
+			go func() {
+				err = gdb.FlushDBs()
+				if err != nil {
+					log.Crit("Gossip flush: ", err)
+				}
+			}()
+			//	if progress < 99 {
+			//		progress = (currentWrittenBytes * 100) / bytesSizeEstimate
+			//		if progress > 99 {
+			//			progress = 99
+			//		}
+			//	}
+			//	str := fmt.Sprintf("Progress: ~ %d%%", progress)
+			//	log.Info(str)
+		}
+	}
+
+	finishedFlush := make(chan bool)
+
+	go func() {
 		err = gdb.FlushDBs()
 		if err != nil {
-			log.Crit("Gossip flush: ", err)
+			log.Crit("Flush db: ", err)
 		}
+		finishedFlush <- true
+	}()
+	<-finishedFlush
 
-		tmp := receivedItems / PROGRESS_LOGGING_FREQUENCY
-		if tmp > loggingThreashold {
-			loggingThreashold = tmp
-			if progress < 99 {
-				progress = (currentWrittenBytes * 100) / bytesSizeEstimate
-				if progress > 99 {
-					progress = 99
-				}
-			}
-			str := fmt.Sprintf("Progress: ~ %d%%", progress)
-			log.Info(str)
-		}
-	}
 	log.Info("Progress: 100%")
 	fmt.Println("Saved: ", receivedItems, " items.")
-
-	err = gdb.FlushDBs()
-	if err != nil {
-		log.Crit("Flush db: ", err)
-	}
 }
 
 func readEstimatedSizeMessage(stream *rlp.Stream) (uint64, error) {
@@ -159,9 +177,6 @@ func readBundle(stream *rlp.Stream, b *BundleOfItems) error {
 	err := stream.Decode(b)
 	if err != nil {
 		return err
-	}
-	if len(b.ErrorMessage) > 0 {
-		return errors.New("Connection stream: " + b.ErrorMessage)
 	}
 	return nil
 }

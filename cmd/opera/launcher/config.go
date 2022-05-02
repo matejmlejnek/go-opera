@@ -99,13 +99,13 @@ var (
 		Value: "full",
 	}
 
-	FastSyncFlagServer = cli.BoolFlag{
-		Name:  "fastsync_s",
+	DirectSyncFlagServer = cli.BoolFlag{
+		Name:  "directsyncserver",
 		Usage: "Enables fast synchronization",
 	}
 
-	FastSyncFlagClient = cli.StringFlag{
-		Name:  "fastsync_c",
+	DirectSyncFlagClient = cli.StringFlag{
+		Name:  "directsyncclient",
 		Usage: "Enables fast synchronization",
 	}
 )

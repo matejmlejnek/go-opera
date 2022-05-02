@@ -1,4 +1,4 @@
-package fast_sync
+package direct_sync
 
 import (
 	"bufio"
@@ -18,12 +18,12 @@ import (
 
 const serverSocketPort = "7002"
 const RECOMMENDED_MIN_BUNDLE_SIZE = 10000
-const PROGRESS_LOGGING_FREQUENCY = 500000
+const PROGRESS_LOGGING_FREQUENCY = 1000000
 const PEER_LIMIT = 1
 
 var PeerCounter = SafePeerCounter{v: 0}
 
-var EstimateGossipSize func() int64 = nil
+var EstimateGossipSize func() uint64 = nil
 
 type SafePeerCounter struct {
 	mu sync.Mutex
@@ -35,10 +35,10 @@ func (c *SafePeerCounter) AllowNewConnection() bool {
 	defer c.mu.Unlock()
 	if c.v < PEER_LIMIT {
 		c.v++
-		log.Info(fmt.Sprintf("Currently connected peers: %d", c.v))
+		log.Info(fmt.Sprintf("Added new connection - total: %d", c.v))
 		return true
 	} else {
-		log.Info(fmt.Sprintf("Currently connected peers: %d", c.v))
+		log.Info(fmt.Sprintf("Denied connection - total: %d", c.v))
 		return false
 	}
 }
@@ -47,18 +47,18 @@ func (c *SafePeerCounter) ReleasedConnection() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.v--
-	log.Info("Currently connected peers: ", c.v)
+	log.Info(fmt.Sprintf("Released connection - total: %d", c.v))
 }
 
 func InitServer(gdb *gossip.Store, gossipPath string) {
-	EstimateGossipSize = func() int64 {
-		var size int64
+	EstimateGossipSize = func() uint64 {
+		var size uint64
 		err := filepath.Walk(gossipPath, func(_ string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
 			if !info.IsDir() {
-				size += info.Size()
+				size += uint64(info.Size())
 			}
 			return err
 		})
@@ -164,7 +164,7 @@ func connectionHandler(connection net.Conn, gdb *gossip.Store) {
 
 	challenge, err := readChallenge(stream)
 	if err != nil {
-		sendError(writer, err.Error())
+		sendOverheadError(writer, err.Error())
 		log.Warn("Error while receiving challenge: ", err)
 		return
 	}
@@ -178,7 +178,7 @@ func connectionHandler(connection net.Conn, gdb *gossip.Store) {
 	var receivedCommand string
 	receivedCommand, err = readCommand(stream)
 	if err != nil {
-		sendError(writer, err.Error())
+		sendOverheadError(writer, err.Error())
 		log.Warn("Error while receiving command: ", err)
 		return
 	}
@@ -188,10 +188,10 @@ func connectionHandler(connection net.Conn, gdb *gossip.Store) {
 			defer PeerCounter.ReleasedConnection()
 			sendFileToClient(writer, gdb)
 		} else {
-			sendError(writer, "Server is at maximum peer capacity")
+			sendOverheadError(writer, "Server is at maximum peer capacity")
 		}
 	} else {
-		sendError(writer, "Bad command: "+receivedCommand)
+		sendOverheadError(writer, "Bad command: "+receivedCommand)
 	}
 }
 
@@ -223,9 +223,9 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 	//	}
 	//}
 	if snap == nil {
-		err := "Server doesn't have snapshot for current epoch"
+		err := "Server doesn't have snapshot for epoch initialized"
 		log.Warn(err)
-		sendError(writer, err)
+		sendOverheadError(writer, err)
 		return
 	}
 	err := sendEstimatedSizeMessage(writer)
@@ -233,16 +233,6 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 		log.Warn(err.Error())
 		return
 	}
-
-	//snap, err := gdb.GetMainDb().GetSnapshot()
-	//if err != nil {
-	//	fmt.Println("Error unable to get snapshot")
-	//	err = sendError(writer)
-	//	if err != nil {
-	//		writer.Write([]byte("Error"))
-	//	}
-	//	return
-	//}
 
 	iterator := snap.NewIterator(nil, nil)
 	defer iterator.Release()
@@ -287,29 +277,34 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 
 	if len(itemsToSend) > 0 {
 		sentItems = sentItems + len(itemsToSend)
-		err := sendBundle(writer, &itemsToSend, &currentLength)
+		err = sendBundle(writer, &itemsToSend, &currentLength)
 		if err != nil {
 			log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
 		}
+	}
+
+	err = sendBundleFinished(writer)
+	if err != nil {
+		log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
 	}
 
 	log.Info(fmt.Sprintf("Sent: %d items.", sentItems))
 }
 
 func sendEstimatedSizeMessage(writer *bufio.Writer) error {
-	var estimatedSize int64 = 0
+	var estimatedSize uint64 = 0
 	if EstimateGossipSize != nil {
 		estimatedSize = EstimateGossipSize()
 	}
-	log.Info("estimated size: " + strconv.FormatInt(estimatedSize, 10))
-	return sendOverheadMessage(writer, strconv.FormatInt(estimatedSize, 10))
+	log.Info("estimated size: " + strconv.FormatUint(estimatedSize, 10))
+	return sendOverheadMessage(writer, strconv.FormatUint(estimatedSize, 10))
 }
 
 func sendBundle(writer *bufio.Writer,
 	itemsToSend *[]Item, currentLength *int) error {
 	hash := getHashOfKeyValuesInBundle(itemsToSend)
 
-	var bundle = BundleOfItems{"", hash, getSignature(&hash), *itemsToSend}
+	var bundle = BundleOfItems{false, hash, getSignature(&hash), *itemsToSend}
 
 	defer func() {
 		writer.Flush()
@@ -319,7 +314,14 @@ func sendBundle(writer *bufio.Writer,
 	return rlp.Encode(writer, bundle)
 }
 
-func sendError(writer *bufio.Writer, error string) {
+func sendBundleFinished(writer *bufio.Writer) error {
+	var bundle = BundleOfItems{true, []byte{}, []byte{}, []Item{}}
+
+	defer writer.Flush()
+	return rlp.Encode(writer, bundle)
+}
+
+func sendOverheadError(writer *bufio.Writer, error string) {
 	challenge := OverheadMessage{ErrorOccured: true, Payload: error}
 	rlp.Encode(writer, challenge)
 	writer.Flush()
