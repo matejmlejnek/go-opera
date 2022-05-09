@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/direct_sync"
 	"github.com/Fantom-foundation/lachesis-base/abft"
+	"github.com/Fantom-foundation/lachesis-base/common/bigendian"
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
 	"github.com/Fantom-foundation/lachesis-base/kvdb"
+	"github.com/Fantom-foundation/lachesis-base/kvdb/flushable"
 	"os"
 	"path"
 	"sort"
@@ -315,7 +317,17 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 		direct_sync.DownloadDataFromServer(hostAdress, gossipDb)
 		fmt.Println("Finished client sync")
 
-		err := cdb.Close()
+		flushId, err := gossipDb.GetMainDb().Get(integration.FlushIDKey)
+		if err != nil {
+			log.Info("GossipDB flush not found")
+			flushId = append([]byte{flushable.CleanPrefix}, bigendian.Uint64ToBytes(uint64(time.Now().UnixNano()))...)
+			err = gossipDb.GetMainDb().Put(integration.FlushIDKey, flushId)
+			if err != nil {
+				log.Crit("Failed to write CleanPrefix to gossip db")
+			}
+		}
+
+		err = cdb.Close()
 		if err != nil {
 			utils.Fatalf("Unable to close lachesis db: %v", err)
 		}
@@ -367,13 +379,16 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 		if err != nil {
 			log.Crit("failed to init consensus database: " + err.Error())
 		}
-		_ = concensusDb.Close()
+
 		log.Info("Apllied genesis")
 
-		err = clearDirtyFlags(producer)
+		err = cMainDb.Put(integration.FlushIDKey, flushId)
 		if err != nil {
-			log.Crit("failed to clean dirty flags" + err.Error())
+			log.Crit("Failed to write CleanPrefix to lachesis db")
 		}
+		_ = concensusDb.Close()
+		log.Info("Set FlushIDKey")
+
 	}
 
 	engine, dagIndex, gdb, cdb, blockProc := integration.MakeEngine(integration.DBProducer(chaindataDir, cfg.cachescale), g, cfg.AppConfigs())

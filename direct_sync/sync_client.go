@@ -13,6 +13,7 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 type Item struct {
@@ -71,10 +72,10 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	}
 	log.Info("Estimated size: " + strconv.FormatUint(bytesSizeEstimate, 10))
 
-	//var progress uint64 = 0
+	var progress uint64 = 0
 	lastLogThreshold := 0
 
-	//var currentWrittenBytes uint64 = 0
+	var currentWrittenBytes uint64 = 0
 	receivedItems := 0
 	for {
 		bundle := BundleOfItems{}
@@ -105,6 +106,20 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 			//currentWrittenBytes = currentWrittenBytes + uint64(len(kk)) + uint64(len(vv))
 			//}
 
+			out1 := fmt.Sprintf("%d-%d", len(bundle.Data[i].Key), uint64(len(bundle.Data[i].Key)))
+			out1arr := strings.Split(out1, "-")
+			if strings.Compare(out1arr[0], out1arr[1]) != 0 {
+				log.Warn("err key comp")
+			}
+
+			out2 := fmt.Sprintf("%d-%d", len(bundle.Data[i].Value), uint64(len(bundle.Data[i].Value)))
+			out2arr := strings.Split(out2, "-")
+			if strings.Compare(out2arr[0], out2arr[1]) != 0 {
+				log.Warn("err value comp")
+			}
+
+			currentWrittenBytes = currentWrittenBytes + uint64(len(bundle.Data[i].Key)) + uint64(len(bundle.Data[i].Value))
+
 			err = mainDB.Put(bundle.Data[i].Key, bundle.Data[i].Value)
 			receivedItems = receivedItems + 1
 
@@ -117,21 +132,22 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		if tmp > lastLogThreshold {
 			lastLogThreshold = tmp
 
-			log.Info(fmt.Sprintf("Received %d", receivedItems))
+			//log.Info(fmt.Sprintf("Received %d", receivedItems))
 			go func() {
 				err = gdb.FlushDBs()
 				if err != nil {
 					log.Crit("Gossip flush: ", err)
 				}
 			}()
-			//	if progress < 99 {
-			//		progress = (currentWrittenBytes * 100) / bytesSizeEstimate
-			//		if progress > 99 {
-			//			progress = 99
-			//		}
-			//	}
-			//	str := fmt.Sprintf("Progress: ~ %d%%", progress)
-			//	log.Info(str)
+			if progress < 99 {
+
+				progress = (currentWrittenBytes * 100) / bytesSizeEstimate
+				if progress > 99 {
+					progress = 99
+				}
+			}
+			str := fmt.Sprintf("Progress: ~ %d%% (%d)", progress, currentWrittenBytes)
+			log.Info(str)
 		}
 	}
 
