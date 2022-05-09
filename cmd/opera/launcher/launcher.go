@@ -293,12 +293,6 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 		utils.Fatalf("Failed to create chaindata directory: %v", err)
 	}
 
-	var g *genesis.Genesis
-	if genesisStore != nil {
-		gv := genesisStore.Genesis()
-		g = &gv
-	}
-
 	hostAdress := ctx.GlobalString(DirectSyncFlagClient.Name)
 	if hostAdress != "" {
 		//direct_sync.TestIterateTroughDb(gdb)
@@ -311,7 +305,18 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 		}
 
 		producer := integration.DBProducer(chaindataDir, cfg.cachescale)
-		_, _, gossipDb, cdb, _ := integration.MakeEngine(producer, g, cfg.AppConfigs())
+
+		dbs, err := integration.MakeFlushableProducer(producer)
+		if err != nil {
+			log.Crit("DB opening error", "flushable producer", err)
+		}
+		//gdb, cdb := getStores(dbs, cfg)
+
+		gossipDb := gossip.NewStore(dbs, cfg.OperaStore)
+
+		if err != nil {
+			log.Crit("DB opening error", "datadir", cfg.Node.DataDir, "err", err)
+		}
 
 		log.Info("directsyncclient")
 		direct_sync.DownloadDataFromServer(hostAdress, gossipDb)
@@ -327,10 +332,6 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 			}
 		}
 
-		err = cdb.Close()
-		if err != nil {
-			utils.Fatalf("Unable to close lachesis db: %v", err)
-		}
 		gossipDb.Close()
 
 		gossipDb, err = makeRawGossipStore(producer, cfg)
@@ -389,6 +390,12 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 		_ = concensusDb.Close()
 		log.Info("Set FlushIDKey")
 
+	}
+
+	var g *genesis.Genesis
+	if genesisStore != nil {
+		gv := genesisStore.Genesis()
+		g = &gv
 	}
 
 	engine, dagIndex, gdb, cdb, blockProc := integration.MakeEngine(integration.DBProducer(chaindataDir, cfg.cachescale), g, cfg.AppConfigs())
