@@ -3,6 +3,12 @@ package launcher
 import (
 	"context"
 	"fmt"
+	"github.com/Fantom-foundation/go-opera/direct_sync"
+	"github.com/Fantom-foundation/lachesis-base/abft"
+	"github.com/Fantom-foundation/lachesis-base/common/bigendian"
+	"github.com/Fantom-foundation/lachesis-base/inter/idx"
+	"github.com/Fantom-foundation/lachesis-base/kvdb"
+	"github.com/Fantom-foundation/lachesis-base/kvdb/flushable"
 	"os"
 	"path"
 	"sort"
@@ -116,6 +122,8 @@ func initFlags() {
 		validatorPubkeyFlag,
 		validatorPasswordFlag,
 		SyncModeFlag,
+		DirectSyncFlagClient,
+		DirectSyncFlagServer,
 	}
 	legacyRpcFlags = []cli.Flag{
 		utils.NoUSBFlag,
@@ -283,9 +291,114 @@ func makeNode(ctx *cli.Context, cfg *config, genesis integration.InputGenesis) (
 	if err := os.MkdirAll(chaindataDir, 0700); err != nil {
 		utils.Fatalf("Failed to create chaindata directory: %v", err)
 	}
+
+	hostAdress := ctx.GlobalString(DirectSyncFlagClient.Name)
+	if hostAdress != "" {
+		//direct_sync.TestIterateTroughDb(gdb)
+		//os.Exit(0)
+
+		_ = os.RemoveAll(chaindataDir)
+
+		if err := os.MkdirAll(chaindataDir, 0700); err != nil {
+			utils.Fatalf("Failed to create chaindata directory: %v", err)
+		}
+
+		producer := integration.DBProducer(chaindataDir, cfg.cachescale)
+
+		dbs, err := integration.MakeFlushableProducer(producer)
+		if err != nil {
+			log.Crit("DB opening error", "flushable producer", err)
+		}
+		//gdb, cdb := getStores(dbs, cfg)
+
+		gossipDb := gossip.NewStore(dbs, cfg.OperaStore)
+
+		if err != nil {
+			log.Crit("DB opening error", "datadir", cfg.Node.DataDir, "err", err)
+		}
+
+		log.Info("directsyncclient")
+		direct_sync.DownloadDataFromServer(hostAdress, gossipDb)
+		fmt.Println("Finished client sync")
+
+		flushId, err := gossipDb.GetMainDb().Get(integration.FlushIDKey)
+		if err != nil {
+			log.Info("GossipDB flush not found")
+			flushId = append([]byte{flushable.CleanPrefix}, bigendian.Uint64ToBytes(uint64(time.Now().UnixNano()))...)
+			err = gossipDb.GetMainDb().Put(integration.FlushIDKey, flushId)
+			if err != nil {
+				log.Crit("Failed to write CleanPrefix to gossip db")
+			}
+		}
+
+		gossipDb.Close()
+
+		gossipDb, err = makeRawGossipStore(producer, cfg)
+		if err != nil {
+			utils.Fatalf("Failed to open 'gossip' database: %v", err)
+		}
+
+		mustOpenDB := func(producer kvdb.DBProducer, name string) kvdb.DropableStore {
+			db, err := producer.OpenDB(name)
+			if err != nil {
+				utils.Fatalf("Failed to open '%s' database: %v", name, err)
+			}
+			return db
+		}
+		gdbEpoch := gossipDb.GetEpoch()
+		gdbValidators := gossipDb.GetValidators()
+		gossipDb.Close()
+
+		log.Info(fmt.Sprintf("Loaded Epoch: ", gdbEpoch))
+		log.Info(fmt.Sprintf("Loaded Validators: ", gdbValidators))
+
+		cMainDb := mustOpenDB(producer, "lachesis")
+		//remove lachesis db
+		_ = cMainDb.Close()
+		cMainDb.Drop()
+
+		log.Info("Recreating lachesis db")
+		cMainDb = mustOpenDB(producer, "lachesis")
+		cGetEpochDB := func(epoch idx.Epoch) kvdb.DropableStore {
+			log.Info("Fetching lachesis-", epoch)
+			return mustOpenDB(producer, fmt.Sprintf("lachesis-%d", epoch))
+		}
+
+		panics := func(name string) func(error) {
+			return func(err error) {
+				log.Crit(fmt.Sprintf("%s error", name), "err", err)
+			}
+		}
+
+		log.Info("Apllying genesis")
+		concensusDb := abft.NewStore(cMainDb, cGetEpochDB, panics("Lachesis store"), cfg.LachesisStore)
+		err = concensusDb.ApplyGenesis(&abft.Genesis{
+			Epoch:      gdbEpoch,
+			Validators: gdbValidators,
+		})
+		if err != nil {
+			log.Crit("failed to init consensus database: " + err.Error())
+		}
+
+		log.Info("Apllied genesis")
+
+		err = cMainDb.Put(integration.FlushIDKey, flushId)
+		if err != nil {
+			log.Crit("Failed to write CleanPrefix to lachesis db")
+		}
+		_ = concensusDb.Close()
+		log.Info("Set FlushIDKey")
+
+	}
+
 	engine, dagIndex, gdb, cdb, genesisStore, blockProc := integration.MakeEngine(integration.DBProducer(chaindataDir, cfg.cachescale), genesis, cfg.AppConfigs())
 	_ = genesis.Close()
 	metrics.SetDataDir(cfg.Node.DataDir)
+
+	if ctx.GlobalBool(DirectSyncFlagServer.Name) {
+		log.Info("directsyncserver")
+		direct_sync.InitServer(gdb, path.Join(chaindataDir, "gossip"))
+	}
 
 	valKeystore := valkeystore.NewDefaultFileKeystore(path.Join(getValKeystoreDir(cfg.Node), "validator"))
 	valPubkey := cfg.Emitter.Validator.PubKey

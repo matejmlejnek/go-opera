@@ -32,7 +32,7 @@ func (s *Store) migrateData() error {
 		return nil
 	}
 
-	err := s.migrations().Exec(versions, s.flushDBs)
+	err := s.migrations().Exec(versions, s.FlushDBs)
 	return err
 }
 

@@ -110,7 +110,7 @@ func rawMakeEngine(gdb *gossip.Store, cdb *abft.Store, g opera.Genesis, cfg Conf
 	return engine, vecClock, blockProc, nil
 }
 
-func makeFlushableProducer(rawProducer kvdb.IterableDBProducer) (*flushable.SyncedPool, error) {
+func MakeFlushableProducer(rawProducer kvdb.IterableDBProducer) (*flushable.SyncedPool, error) {
 	existingDBs := rawProducer.Names()
 	err := CheckDBList(existingDBs)
 	if err != nil {
@@ -152,7 +152,7 @@ func applyGenesis(rawProducer kvdb.DBProducer, inputGenesis InputGenesis, cfg Co
 }
 
 func makeEngine(rawProducer kvdb.IterableDBProducer, inputGenesis InputGenesis, emptyStart bool, cfg Configs) (*abft.Lachesis, *vecmt.Index, *gossip.Store, *abft.Store, *genesisstore.Store, gossip.BlockProc, error) {
-	dbs, err := makeFlushableProducer(rawProducer)
+	dbs, err := MakeFlushableProducer(rawProducer)
 	if err != nil {
 		return nil, nil, nil, nil, nil, gossip.BlockProc{}, err
 	}
@@ -170,7 +170,7 @@ func makeEngine(rawProducer kvdb.IterableDBProducer, inputGenesis InputGenesis, 
 		}
 
 		// re-open dbs
-		dbs, err = makeFlushableProducer(rawProducer)
+		dbs, err = MakeFlushableProducer(rawProducer)
 		if err != nil {
 			return nil, nil, nil, nil, nil, gossip.BlockProc{}, err
 		}

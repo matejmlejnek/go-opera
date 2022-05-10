@@ -206,10 +206,10 @@ func (s *Store) Commit() error {
 		es.FlushHeads()
 		es.FlushLastEvents()
 	}
-	return s.flushDBs()
+	return s.FlushDBs()
 }
 
-func (s *Store) flushDBs() error {
+func (s *Store) FlushDBs() error {
 	s.prevFlushTime = time.Now()
 	flushID := bigendian.Uint64ToBytes(uint64(s.prevFlushTime.UnixNano()))
 	return s.dbs.Flush(flushID)
@@ -253,6 +253,10 @@ func (s *Store) CaptureEvmKvdbSnapshot() {
 		return
 	}
 	s.cache.KvdbEvmSnap.Store(newStore)
+}
+
+func (s *Store) GetMainDb() kvdb.Store {
+	return s.mainDB
 }
 
 func (s *Store) LastKvdbEvmSnapshot() *evmstore.Store {
