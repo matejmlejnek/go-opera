@@ -78,7 +78,7 @@ func InitServer(gdb *gossip.Store, gossipPath string) {
 
 	//go testRLP()
 
-	server, error := net.Listen("tcp", "localhost:"+serverSocketPort)
+	server, error := net.Listen("tcp", "127.0.0.1:"+serverSocketPort)
 	if error != nil {
 		log.Error("There was an error starting the server" + error.Error())
 		return
