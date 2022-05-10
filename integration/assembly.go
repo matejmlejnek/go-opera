@@ -187,7 +187,9 @@ func makeEngine(rawProducer kvdb.IterableDBProducer, inputGenesis InputGenesis, 
 		if err != nil {
 			gdb.Close()
 			cdb.Close()
-			genesisStore.Close()
+			if genesisStore != nil {
+				genesisStore.Close()
+			}
 		}
 	}()
 
@@ -198,22 +200,22 @@ func makeEngine(rawProducer kvdb.IterableDBProducer, inputGenesis InputGenesis, 
 			err = errors.New("malformed chainstore: genesis hash is not written")
 			return nil, nil, nil, nil, nil, gossip.BlockProc{}, err
 		}
-		if *genesisHash != inputGenesis.Hash {
-			err = &GenesisMismatchError{*genesisHash, inputGenesis.Hash}
-			return nil, nil, nil, nil, nil, gossip.BlockProc{}, err
-		}
+		//if *genesisHash != inputGenesis.Hash {
+		//	err = &GenesisMismatchError{*genesisHash, inputGenesis.Hash}
+		//	return nil, nil, nil, nil, nil, gossip.BlockProc{}, err
+		//}
 	}
 
-	engine, vecClock, blockProc, err := rawMakeEngine(gdb, cdb, genesisStore.GetGenesis(), cfg, false)
+	engine, vecClock, blockProc, err := rawMakeEngine(gdb, cdb, opera.Genesis{}, cfg, false)
 	if err != nil {
 		err = fmt.Errorf("failed to make engine: %v", err)
 		return nil, nil, nil, nil, nil, gossip.BlockProc{}, err
 	}
 
-	if *gdb.GetGenesisHash() != inputGenesis.Hash {
-		err = fmt.Errorf("genesis hash mismatch with genesis file header: %s != %s", gdb.GetGenesisHash().String(), inputGenesis.Hash.String())
-		return nil, nil, nil, nil, nil, gossip.BlockProc{}, err
-	}
+	//if *gdb.GetGenesisHash() != inputGenesis.Hash {
+	//	err = fmt.Errorf("genesis hash mismatch with genesis file header: %s != %s", gdb.GetGenesisHash().String(), inputGenesis.Hash.String())
+	//	return nil, nil, nil, nil, nil, gossip.BlockProc{}, err
+	//}
 
 	err = gdb.Commit()
 	if err != nil {

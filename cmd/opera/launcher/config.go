@@ -215,7 +215,7 @@ func getOperaGenesis(ctx *cli.Context) integration.InputGenesis {
 			Read:  readGenesisStore,
 			Close: genesisFile.Close,
 		}
-	case ctx.GlobalIsSet(DirectSyncFlagClient.Name):
+	default:
 		genesis = integration.InputGenesis{
 			Hash: hash.FromBytes([]byte("")),
 			Read: func(*genesisstore.Store) error {
@@ -225,8 +225,6 @@ func getOperaGenesis(ctx *cli.Context) integration.InputGenesis {
 				return nil
 			},
 		}
-	default:
-		log.Crit("Network genesis is not specified")
 	}
 	return genesis
 }

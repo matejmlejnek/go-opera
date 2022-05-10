@@ -156,17 +156,17 @@ func DBProducer(chaindataDir string, scale cachescale.Func) kvdb.IterableDBProdu
 	return pebble.NewProducer(chaindataDir)
 
 	/*
-	if strings.HasPrefix(chaindataDir, "pebble:") {
-		return pebble.NewProducer(chaindataDir[7:])
-	}
+		if strings.HasPrefix(chaindataDir, "pebble:") {
+			return pebble.NewProducer(chaindataDir[7:])
+		}
 
-	if strings.HasPrefix(chaindataDir, "leveldb:") {
-		chaindataDir = chaindataDir[8:]
-	}
-	return leveldb.NewProducer(chaindataDir, func(name string) int {
-		return dbCacheSize(name, scale.I)
-	})
-	 */
+		if strings.HasPrefix(chaindataDir, "leveldb:") {
+			chaindataDir = chaindataDir[8:]
+		}
+		return leveldb.NewProducer(chaindataDir, func(name string) int {
+			return dbCacheSize(name, scale.I)
+		})
+	*/
 }
 
 func CheckDBList(names []string) error {
@@ -183,9 +183,9 @@ func CheckDBList(names []string) error {
 	if !namesMap["lachesis"] {
 		return errors.New("lachesis DB is not found")
 	}
-	if !namesMap["genesis"] {
-		return errors.New("genesis DB is not found")
-	}
+	//if !namesMap["genesis"] {
+	//	return errors.New("genesis DB is not found")
+	//}
 	return nil
 }
 
