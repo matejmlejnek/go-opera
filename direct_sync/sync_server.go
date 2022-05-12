@@ -125,10 +125,6 @@ func TestIterateTroughDb(gdb *gossip.Store) {
 		if (numberOfItems % 10000000) == 0 {
 			fmt.Printf("numb_Items: %d\n", numberOfItems)
 		}
-
-		if numberOfItems > 1000000000 {
-			break
-		}
 	}
 
 	log.Info("Total number of prefix occurances:", "total count", len(mp))
