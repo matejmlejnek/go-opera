@@ -17,7 +17,7 @@ import (
 )
 
 const serverSocketPort = "7002"
-const RECOMMENDED_MIN_BUNDLE_SIZE = 10000
+const RECOMMENDED_MIN_BUNDLE_SIZE = 10000000
 const PROGRESS_LOGGING_FREQUENCY = 5000000
 const PEER_LIMIT = 1
 
@@ -214,14 +214,6 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 	fmt.Println("sending to client")
 
 	snap := gossip.SnapshotOfLastEpoch
-	//if snap == nil {
-	//	var err error
-	//	snap, err = gdb.GetMainDb().GetSnapshot()
-	//	if err != nil {
-	//		log.Warn(err.Error())
-	//		snap = nil
-	//	}
-	//}
 	if snap == nil {
 		err := "Server doesn't have snapshot for epoch initialized"
 		log.Warn(err)

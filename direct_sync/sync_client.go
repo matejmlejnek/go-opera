@@ -140,17 +140,18 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 			}
 		}
 
+		log.Info("beforeTicker", "time", time.Now())
 		select {
 		case <-ticker.C:
 			{
 				log.Info(fmt.Sprintf("Received %d", receivedItems))
 				printClientPerformance()
-				//go func() {
-				//	err = gdb.FlushDBs()
-				//	if err != nil {
-				//		log.Crit("Gossip flush: ", err)
-				//	}
-				//}()
+				go func() {
+					err = gdb.FlushDBs()
+					if err != nil {
+						log.Crit("Gossip flush: ", err)
+					}
+				}()
 				//if progress < 99 {
 				//
 				//	progress = (currentWrittenBytes * 100) / bytesSizeEstimate
@@ -163,6 +164,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 			}
 		default:
 		}
+		log.Info("afterTicker", "time", time.Now())
 	}
 	ticker.Stop()
 
