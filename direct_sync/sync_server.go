@@ -21,6 +21,11 @@ const RECOMMENDED_MIN_BUNDLE_SIZE = 10000
 const PROGRESS_LOGGING_FREQUENCY = 1000000
 const PEER_LIMIT = 1
 
+var performanceSocketWrite time.Duration
+
+//var performanceDbRead time.Duration
+var performanceFlushIdCompare time.Duration
+
 var PeerCounter = SafePeerCounter{v: 0}
 
 var EstimateGossipSize func() uint64 = nil
@@ -213,6 +218,8 @@ func readCommand(stream *rlp.Stream) (string, error) {
 func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 	fmt.Println("sending to client")
 
+	startTime = time.Now()
+
 	snap := gossip.SnapshotOfLastEpoch
 	//if snap == nil {
 	//	var err error
@@ -244,14 +251,21 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 	var currentLength = 0
 	var itemsToSend []Item
 	for iterator.Next() {
+		var timeSt = time.Now()
 		if bytes.Compare(iterator.Key(), integration.FlushIDKey) == 0 {
 			log.Info("Skipping flush key")
 			continue
 		}
+		performanceFlushIdCompare += time.Now().Sub(timeSt)
 
 		i += 1
 		if i%PROGRESS_LOGGING_FREQUENCY == 0 {
+			printServerPerformance()
 			fmt.Println("Process: ", i)
+			//testing performance of just 100 000 000  items transfered
+			if i > 100000000 {
+				return
+			}
 		}
 		key := iterator.Key()
 		value := iterator.Value()
@@ -267,7 +281,12 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 
 		if currentLength > RECOMMENDED_MIN_BUNDLE_SIZE {
 			sentItems = sentItems + len(itemsToSend)
-			err := sendBundle(writer, &itemsToSend, &currentLength)
+			var timeSt = time.Now()
+			hash := getHashOfKeyValuesInBundle(&itemsToSend)
+			performanceHash += time.Now().Sub(timeSt)
+			timeSt = time.Now()
+			err := sendBundle(writer, &itemsToSend, &currentLength, hash)
+			performanceSocketWrite += time.Now().Sub(timeSt)
 			if err != nil {
 				fmt.Println(fmt.Sprintf("sending pipe broken: %v", err.Error()))
 				break
@@ -277,7 +296,10 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 
 	if len(itemsToSend) > 0 {
 		sentItems = sentItems + len(itemsToSend)
-		err = sendBundle(writer, &itemsToSend, &currentLength)
+		var timeSt = time.Now()
+		hash := getHashOfKeyValuesInBundle(&itemsToSend)
+		performanceHash += time.Now().Sub(timeSt)
+		err = sendBundle(writer, &itemsToSend, &currentLength, hash)
 		if err != nil {
 			log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
 		}
@@ -301,9 +323,7 @@ func sendEstimatedSizeMessage(writer *bufio.Writer) error {
 }
 
 func sendBundle(writer *bufio.Writer,
-	itemsToSend *[]Item, currentLength *int) error {
-	hash := getHashOfKeyValuesInBundle(itemsToSend)
-
+	itemsToSend *[]Item, currentLength *int, hash []byte) error {
 	var bundle = BundleOfItems{false, hash, getSignature(&hash), *itemsToSend}
 
 	defer func() {
@@ -325,4 +345,10 @@ func sendOverheadError(writer *bufio.Writer, error string) {
 	challenge := OverheadMessage{ErrorOccured: true, Payload: error}
 	rlp.Encode(writer, challenge)
 	writer.Flush()
+}
+
+func printServerPerformance() {
+	var totalTime = time.Now().Sub(startTime)
+	var rest = totalTime - performanceHash - performanceSocketWrite - performanceFlushIdCompare
+	log.Info("performance: ", "totalTime", totalTime, "performanceHash", performanceHash, "performanceSocketWrite", performanceSocketWrite, "performanceFlushIdCompare", performanceFlushIdCompare, "restTime", rest)
 }

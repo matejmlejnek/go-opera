@@ -16,6 +16,11 @@ import (
 	"time"
 )
 
+var startTime time.Time
+var performanceHash time.Duration
+var performanceSocketRead time.Duration
+var performanceDbWrite time.Duration
+
 type Item struct {
 	Key   []byte
 	Value []byte
@@ -72,6 +77,8 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	}
 	log.Info("Estimated size: " + strconv.FormatUint(bytesSizeEstimate, 10))
 
+	startTime = time.Now()
+
 	ticker := time.NewTicker(10 * time.Second)
 
 	//var progress uint64 = 0
@@ -80,7 +87,9 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	receivedItems := 0
 	for {
 		bundle := BundleOfItems{}
+		var timeSt = time.Now()
 		err := readBundle(stream, &bundle)
+		performanceSocketRead += time.Now().Sub(timeSt)
 		if err != nil {
 			if err == io.EOF {
 				log.Crit("EOF - end of stream")
@@ -121,7 +130,9 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 			//currentWrittenBytes = currentWrittenBytes + uint64(len(bundle.Data[i].Key)) + uint64(len(bundle.Data[i].Value))
 
+			var timeSt = time.Now()
 			err = mainDB.Put(bundle.Data[i].Key, bundle.Data[i].Value)
+			performanceDbWrite += time.Now().Sub(timeSt)
 			receivedItems = receivedItems + 1
 
 			if err != nil {
@@ -133,6 +144,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		case <-ticker.C:
 			{
 				log.Info(fmt.Sprintf("Received %d", receivedItems))
+				printClientPerformance()
 				go func() {
 					err = gdb.FlushDBs()
 					if err != nil {
@@ -220,6 +232,7 @@ func sendChallenge(writer *bufio.Writer) error {
 }
 
 func verifySignatures(bundle *BundleOfItems) error {
+	var timeSt = time.Now()
 	hash := getHashOfKeyValuesInBundle(&(bundle.Data))
 
 	//fmt.Printf("h1: %x\n", hash)
@@ -235,6 +248,7 @@ func verifySignatures(bundle *BundleOfItems) error {
 		return errors.New("Signature not matching original")
 	}
 
+	performanceHash += time.Now().Sub(timeSt)
 	return nil
 }
 
@@ -263,4 +277,10 @@ func sendOverheadMessage(writer *bufio.Writer, message string) error {
 		return err
 	}
 	return nil
+}
+
+func printClientPerformance() {
+	var totalTime = time.Now().Sub(startTime)
+	var rest = totalTime - performanceHash - performanceSocketRead - performanceDbWrite
+	log.Info("performance: ", "totalTime", totalTime, "performanceHash", performanceHash, "performanceSocketRead", performanceSocketRead, "performanceDbWrite", performanceDbWrite, "restTime", rest)
 }
