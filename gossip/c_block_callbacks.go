@@ -1,7 +1,6 @@
 package gossip
 
 import (
-	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -26,7 +25,6 @@ import (
 	"github.com/Fantom-foundation/go-opera/inter"
 	"github.com/Fantom-foundation/go-opera/inter/iblockproc"
 	"github.com/Fantom-foundation/go-opera/opera"
-	"github.com/Fantom-foundation/go-opera/utils"
 )
 
 var (
@@ -427,10 +425,10 @@ func consensusCallbackBeginBlockFn(
 					blockWriteTimer.Update(time.Since(substart) - statedb.AccountCommits - statedb.StorageCommits - statedb.SnapshotCommits)
 					blockInsertTimer.UpdateSince(start)
 
-					now := time.Now()
-					log.Info("New block", "index", blockCtx.Idx, "id", block.Atropos, "gas_used",
-						evmBlock.GasUsed, "txs", fmt.Sprintf("%d/%d", len(evmBlock.Transactions), len(block.SkippedTxs)),
-						"age", utils.PrettyDuration(now.Sub(block.Time.Time())), "t", utils.PrettyDuration(now.Sub(start)))
+					//now := time.Now()
+					//log.Info("New block", "index", blockCtx.Idx, "id", block.Atropos, "gas_used",
+					//	evmBlock.GasUsed, "txs", fmt.Sprintf("%d/%d", len(evmBlock.Transactions), len(block.SkippedTxs)),
+					//	"age", utils.PrettyDuration(now.Sub(block.Time.Time())), "t", utils.PrettyDuration(now.Sub(start)))
 				}
 				if confirmedEvents.Len() != 0 {
 					atomic.StoreUint32(blockBusyFlag, 1)
