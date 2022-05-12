@@ -18,7 +18,7 @@ import (
 
 const serverSocketPort = "7002"
 const RECOMMENDED_MIN_BUNDLE_SIZE = 10000
-const PROGRESS_LOGGING_FREQUENCY = 1000000
+const PROGRESS_LOGGING_FREQUENCY = 5000000
 const PEER_LIMIT = 1
 
 var performanceSocketWrite time.Duration
