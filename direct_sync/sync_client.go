@@ -145,12 +145,12 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 			{
 				log.Info(fmt.Sprintf("Received %d", receivedItems))
 				printClientPerformance()
-				go func() {
-					err = gdb.FlushDBs()
-					if err != nil {
-						log.Crit("Gossip flush: ", err)
-					}
-				}()
+				//go func() {
+				//	err = gdb.FlushDBs()
+				//	if err != nil {
+				//		log.Crit("Gossip flush: ", err)
+				//	}
+				//}()
 				//if progress < 99 {
 				//
 				//	progress = (currentWrittenBytes * 100) / bytesSizeEstimate

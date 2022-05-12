@@ -115,11 +115,6 @@ func TestIterateTroughDb(gdb *gossip.Store) {
 		key := iterator.Key()
 		value := iterator.Value()
 		if value != nil {
-			// pod 4 000-005 000
-
-			//if numberOfItems >= 4000001 {
-			//	break
-			//}
 			numberOfItems += 1
 			totalBytesKey += len(key)
 			totalBytesValue += len(value)
@@ -262,10 +257,6 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 		if i%PROGRESS_LOGGING_FREQUENCY == 0 {
 			printServerPerformance()
 			fmt.Println("Process: ", i)
-			//testing performance of just 500 000 000  items transfered
-			if i > 500000000 {
-				return
-			}
 		}
 		key := iterator.Key()
 		value := iterator.Value()
