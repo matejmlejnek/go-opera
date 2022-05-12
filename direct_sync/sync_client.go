@@ -14,34 +14,11 @@ import (
 	"net"
 	"reflect"
 	"strconv"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
-var bundlesInWrittingQueueCounter = SafeCounter{v: 0}
-
-type SafeCounter struct {
-	mu sync.Mutex
-	v  int
-}
-
-func (c *SafeCounter) GetValue() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.v
-}
-
-func (c *SafeCounter) Increment() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.v++
-}
-
-func (c *SafeCounter) Decrement() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.v--
-}
+var bundlesInWrittingQueueCounter uint32 = 0
 
 type Item struct {
 	Key   []byte
@@ -99,7 +76,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	}
 	log.Info("Estimated size: " + strconv.FormatUint(bytesSizeEstimate, 10))
 
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
 
 	var receivedItems = 0
 
@@ -127,7 +104,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 			fmt.Println(err.Error())
 		}
 
-		bundlesInWrittingQueueCounter.Increment()
+		atomic.AddUint32(&bundlesInWrittingQueueCounter, 1)
 		dbWriterQueue <- bundle.Data
 		receivedItems += len(bundle.Data)
 
@@ -142,13 +119,16 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	ticker.Stop()
 
 	for {
-		if bundlesInWrittingQueueCounter.GetValue() == 0 {
+		stillBeingProcessed := atomic.LoadUint32(&bundlesInWrittingQueueCounter)
+		if stillBeingProcessed == 0 {
+			log.Info("Flush finished.")
 			break
 		}
 		log.Info("Flush not complete waiting 5 sec.")
 		time.Sleep(5 * time.Second)
 	}
 
+	stopSignal <- true
 	close(dbWriterQueue)
 
 	log.Info("Progress: 100%")
@@ -160,6 +140,9 @@ func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, s
 		select {
 		case data := <-dbWriterQueue:
 			{
+				if len(data) == 0 {
+					continue
+				}
 				for i := range data {
 					err := mainDB.Put(data[i].Key, data[i].Value)
 
@@ -170,11 +153,9 @@ func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, s
 
 				err := gdb.FlushDBs()
 				if err != nil {
-					log.Crit("Gossip flush: ", err)
+					log.Crit("Gossip flush: ", "err", err)
 				}
-				bundlesInWrittingQueueCounter.Decrement()
-
-				log.Info("Left in queue: ", "counter", bundlesInWrittingQueueCounter.GetValue())
+				atomic.AddUint32(&bundlesInWrittingQueueCounter, ^uint32(0))
 			}
 		case <-stopSignal:
 			{
@@ -236,9 +217,6 @@ func sendChallenge(writer *bufio.Writer) error {
 
 func verifySignatures(bundle *BundleOfItems) error {
 	hash := getHashOfKeyValuesInBundle(&(bundle.Data))
-
-	//fmt.Printf("h1: %x\n", hash)
-	//fmt.Printf("h2: %x\n", bundle.Hash)
 
 	if !reflect.DeepEqual(hash, bundle.Hash) {
 		return errors.New("Hash not matching original")

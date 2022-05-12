@@ -13,11 +13,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const serverSocketPort = "7002"
 const RECOMMENDED_MIN_BUNDLE_SIZE = 10000000
-const PROGRESS_LOGGING_FREQUENCY = 5000000
+const PROGRESS_LOGGING_FREQUENCY = 30 * time.Second
 const PEER_LIMIT = 1
 
 var PeerCounter = SafePeerCounter{v: 0}
@@ -173,6 +174,8 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 
 	var sentItems = 0
 
+	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
+
 	var currentLength = 0
 	var itemsToSend []Item
 	for iterator.Next() {
@@ -182,9 +185,14 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 		}
 
 		i += 1
-		if i%PROGRESS_LOGGING_FREQUENCY == 0 {
-			fmt.Println("Process: ", i)
+		select {
+		case <-ticker.C:
+			{
+				fmt.Println("Process: ", i)
+			}
+		default:
 		}
+
 		key := iterator.Key()
 		value := iterator.Value()
 		if value == nil {
@@ -206,6 +214,7 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 			}
 		}
 	}
+	ticker.Stop()
 
 	if len(itemsToSend) > 0 {
 		sentItems = sentItems + len(itemsToSend)
