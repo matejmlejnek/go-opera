@@ -23,7 +23,6 @@ const PEER_LIMIT = 1
 
 var performanceSocketWrite time.Duration
 
-//var performanceDbRead time.Duration
 var performanceFlushIdCompare time.Duration
 
 var PeerCounter = SafePeerCounter{v: 0}
