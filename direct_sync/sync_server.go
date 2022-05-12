@@ -3,6 +3,7 @@ package direct_sync
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
 	"github.com/Fantom-foundation/go-opera/integration"
@@ -74,7 +75,7 @@ func InitServer(gdb *gossip.Store, gossipPath string) {
 
 	//go snapshotService()
 
-	//go TestIterateTroughDb(gdb)
+	TestIterateTroughDb(gdb)
 
 	//go testFunction()
 	//go testNetxxxVal()
@@ -93,8 +94,8 @@ func InitServer(gdb *gossip.Store, gossipPath string) {
 
 func TestIterateTroughDb(gdb *gossip.Store) {
 	snap, err := gdb.GetMainDb().GetSnapshot()
-	if err == nil {
-		fmt.Println("Error unable to get snapshot")
+	if err != nil {
+		log.Crit("Error unable to get snapshot", "error", err)
 	}
 
 	numberOfItems := 0
@@ -104,35 +105,44 @@ func TestIterateTroughDb(gdb *gossip.Store) {
 
 	t1 := time.Now()
 
+	mp := make(map[string]int)
+
 	iterator := snap.NewIterator(nil, nil)
 	defer iterator.Release()
 	for iterator.Next() {
-		if bytes.Compare(iterator.Key(), integration.FlushIDKey) == 0 {
-			fmt.Println("Skipping flush key")
-			continue
-		}
 		key := iterator.Key()
 		value := iterator.Value()
-		if value != nil {
-			numberOfItems += 1
-			totalBytesKey += len(key)
-			totalBytesValue += len(value)
+		numberOfItems += 1
+		totalBytesKey += len(key)
+		totalBytesValue += len(value)
 
-			if len(key) > 300000 || len(value) > 300000 {
-				fmt.Println("len key: ", len(key), " len value: ", len(value))
-			}
+		keyStr := hex.EncodeToString(key)
+		if len(keyStr) > 4 {
+			keyStr = keyStr[0:3]
+		}
+		mp[keyStr] = mp[keyStr] + 1
 
-			if (numberOfItems % 1000000) == 0 {
-				fmt.Printf("numb_Items: %d\n", numberOfItems)
-			}
+		if (numberOfItems % 10000000) == 0 {
+			fmt.Printf("numb_Items: %d\n", numberOfItems)
+		}
+
+		if numberOfItems > 1000000000 {
+			break
 		}
 	}
+
+	log.Info("Total number of prefix occurances:", "total count", len(mp))
+
+	for prefix, count := range mp {
+		fmt.Printf("prefix: %s count: %d\n", prefix, count)
+	}
+
 	fmt.Printf("numb_Items_total: %d\n", numberOfItems)
 	t2 := time.Now()
 	fmt.Printf("totalBytesKey: %d\n", totalBytesKey)
 	fmt.Printf("totalBytesValue: %d\n", totalBytesValue)
 
-	fmt.Printf("It took : %f seconds", t2.Sub(t1).Seconds())
+	log.Info("IterateTroughDbFinished", "duration", t2.Sub(t1))
 }
 
 func serverMessageHandling(server net.Listener, gdb *gossip.Store) {
