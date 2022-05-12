@@ -218,8 +218,6 @@ func readCommand(stream *rlp.Stream) (string, error) {
 func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 	fmt.Println("sending to client")
 
-	startTime = time.Now()
-
 	snap := gossip.SnapshotOfLastEpoch
 	//if snap == nil {
 	//	var err error
@@ -240,6 +238,8 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 		log.Warn(err.Error())
 		return
 	}
+
+	startTime = time.Now()
 
 	iterator := snap.NewIterator(nil, nil)
 	defer iterator.Release()
@@ -262,8 +262,8 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 		if i%PROGRESS_LOGGING_FREQUENCY == 0 {
 			printServerPerformance()
 			fmt.Println("Process: ", i)
-			//testing performance of just 100 000 000  items transfered
-			if i > 100000000 {
+			//testing performance of just 500 000 000  items transfered
+			if i > 500000000 {
 				return
 			}
 		}
@@ -283,10 +283,11 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 			sentItems = sentItems + len(itemsToSend)
 			var timeSt = time.Now()
 			hash := getHashOfKeyValuesInBundle(&itemsToSend)
-			performanceHash += time.Now().Sub(timeSt)
-			timeSt = time.Now()
+			var timeSt2 = time.Now()
+			performanceHash += timeSt2.Sub(timeSt)
+
 			err := sendBundle(writer, &itemsToSend, &currentLength, hash)
-			performanceSocketWrite += time.Now().Sub(timeSt)
+			performanceSocketWrite += time.Now().Sub(timeSt2)
 			if err != nil {
 				fmt.Println(fmt.Sprintf("sending pipe broken: %v", err.Error()))
 				break
