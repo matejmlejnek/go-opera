@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
+	"github.com/Fantom-foundation/lachesis-base/kvdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"io"
@@ -13,8 +14,34 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"sync"
 	"time"
 )
+
+var bundlesInWrittingQueueCounter = SafeCounter{v: 0}
+
+type SafeCounter struct {
+	mu sync.Mutex
+	v  int
+}
+
+func (c *SafeCounter) GetValue() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.v
+}
+
+func (c *SafeCounter) Increment() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.v++
+}
+
+func (c *SafeCounter) Decrement() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.v--
+}
 
 type Item struct {
 	Key   []byte
@@ -74,10 +101,12 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 	ticker := time.NewTicker(10 * time.Second)
 
-	//var progress uint64 = 0
+	var receivedItems = 0
 
-	//var currentWrittenBytes uint64 = 0
-	receivedItems := 0
+	dbWriterQueue := make(chan []Item)
+	stopSignal := make(chan bool)
+	go dbWriter(dbWriterQueue, mainDB, gdb, stopSignal)
+
 	for {
 		bundle := BundleOfItems{}
 		err := readBundle(stream, &bundle)
@@ -98,75 +127,61 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 			fmt.Println(err.Error())
 		}
 
-		for i := range bundle.Data {
-			//kk, err1 := rlp.EncodeToBytes(bundle.Data[i].Key)
-			//vv, err2 := rlp.EncodeToBytes(bundle.Data[i].Value)
-			//if err1 != nil || err2 != nil {
-			//currentWrittenBytes = currentWrittenBytes + uint64(len(bundle.Data[i].Key)) + uint64(len(bundle.Data[i].Value))
-			//} else {
-			//currentWrittenBytes = currentWrittenBytes + uint64(len(kk)) + uint64(len(vv))
-			//}
-
-			//out1 := fmt.Sprintf("%d-%d", len(bundle.Data[i].Key), uint64(len(bundle.Data[i].Key)))
-			//out1arr := strings.Split(out1, "-")
-			//if strings.Compare(out1arr[0], out1arr[1]) != 0 {
-			//	log.Warn("err key comp")
-			//}
-			//
-			//out2 := fmt.Sprintf("%d-%d", len(bundle.Data[i].Value), uint64(len(bundle.Data[i].Value)))
-			//out2arr := strings.Split(out2, "-")
-			//if strings.Compare(out2arr[0], out2arr[1]) != 0 {
-			//	log.Warn("err value comp")
-			//}
-
-			//currentWrittenBytes = currentWrittenBytes + uint64(len(bundle.Data[i].Key)) + uint64(len(bundle.Data[i].Value))
-
-			err = mainDB.Put(bundle.Data[i].Key, bundle.Data[i].Value)
-			receivedItems = receivedItems + 1
-
-			if err != nil {
-				log.Crit(fmt.Sprintf("Insert into db: %v", err))
-			}
-		}
+		bundlesInWrittingQueueCounter.Increment()
+		dbWriterQueue <- bundle.Data
+		receivedItems += len(bundle.Data)
 
 		select {
 		case <-ticker.C:
 			{
 				log.Info(fmt.Sprintf("Received %d", receivedItems))
-				go func() {
-					err = gdb.FlushDBs()
-					if err != nil {
-						log.Crit("Gossip flush: ", err)
-					}
-				}()
-				//if progress < 99 {
-				//
-				//	progress = (currentWrittenBytes * 100) / bytesSizeEstimate
-				//	if progress > 99 {
-				//		progress = 99
-				//	}
-				//}
-				//str := fmt.Sprintf("Progress: ~ %d%% (%d)", progress, currentWrittenBytes)
-				//log.Info(str)
 			}
 		default:
 		}
 	}
 	ticker.Stop()
 
-	finishedFlush := make(chan bool)
-
-	go func() {
-		err = gdb.FlushDBs()
-		if err != nil {
-			log.Crit("Flush db: ", err)
+	for {
+		if bundlesInWrittingQueueCounter.GetValue() == 0 {
+			break
 		}
-		finishedFlush <- true
-	}()
-	<-finishedFlush
+		log.Info("Flush not complete waiting 5 sec.")
+		time.Sleep(5 * time.Second)
+	}
+
+	close(dbWriterQueue)
 
 	log.Info("Progress: 100%")
 	fmt.Println("Saved: ", receivedItems, " items.")
+}
+
+func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, stopSignal chan bool) {
+	for {
+		select {
+		case data := <-dbWriterQueue:
+			{
+				for i := range data {
+					err := mainDB.Put(data[i].Key, data[i].Value)
+
+					if err != nil {
+						log.Crit(fmt.Sprintf("Insert into db: %v", err))
+					}
+				}
+
+				err := gdb.FlushDBs()
+				if err != nil {
+					log.Crit("Gossip flush: ", err)
+				}
+				bundlesInWrittingQueueCounter.Decrement()
+
+				log.Info("Left in queue: ", "counter", bundlesInWrittingQueueCounter.GetValue())
+			}
+		case <-stopSignal:
+			{
+				break
+			}
+		}
+	}
 }
 
 func readEstimatedSizeMessage(stream *rlp.Stream) (uint64, error) {
