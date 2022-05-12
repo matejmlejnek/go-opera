@@ -166,16 +166,10 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	}
 	ticker.Stop()
 
-	finishedFlush := make(chan bool)
-
-	go func() {
-		err = gdb.FlushDBs()
-		if err != nil {
-			log.Crit("Flush db: ", err)
-		}
-		finishedFlush <- true
-	}()
-	<-finishedFlush
+	err = gdb.FlushDBs()
+	if err != nil {
+		log.Crit("Flush db: ", err)
+	}
 
 	log.Info("Progress: 100%")
 	fmt.Println("Saved: ", receivedItems, " items.")
