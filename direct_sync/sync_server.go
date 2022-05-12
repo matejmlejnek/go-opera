@@ -13,12 +13,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
-	"time"
 )
 
 const serverSocketPort = "7002"
-const RECOMMENDED_MIN_BUNDLE_SIZE = 10000
-const PROGRESS_LOGGING_FREQUENCY = 1000000
+const RECOMMENDED_MIN_BUNDLE_SIZE = 10000000
+const PROGRESS_LOGGING_FREQUENCY = 5000000
 const PEER_LIMIT = 1
 
 var PeerCounter = SafePeerCounter{v: 0}
@@ -68,16 +67,6 @@ func InitServer(gdb *gossip.Store, gossipPath string) {
 		return size
 	}
 
-	//go snapshotService()
-
-	//go TestIterateTroughDb(gdb)
-
-	//go testFunction()
-	//go testNetxxxVal()
-	//go testEncodeIntToByteAndBack()
-
-	//go testRLP()
-
 	server, error := net.Listen("tcp", "0.0.0.0:"+serverSocketPort)
 	if error != nil {
 		log.Error("There was an error starting the server" + error.Error())
@@ -85,55 +74,6 @@ func InitServer(gdb *gossip.Store, gossipPath string) {
 	}
 
 	go serverMessageHandling(server, gdb)
-}
-
-func TestIterateTroughDb(gdb *gossip.Store) {
-	snap, err := gdb.GetMainDb().GetSnapshot()
-	if err == nil {
-		fmt.Println("Error unable to get snapshot")
-	}
-
-	numberOfItems := 0
-
-	totalBytesKey := 0
-	totalBytesValue := 0
-
-	t1 := time.Now()
-
-	iterator := snap.NewIterator(nil, nil)
-	defer iterator.Release()
-	for iterator.Next() {
-		if bytes.Compare(iterator.Key(), integration.FlushIDKey) == 0 {
-			fmt.Println("Skipping flush key")
-			continue
-		}
-		key := iterator.Key()
-		value := iterator.Value()
-		if value != nil {
-			// pod 4 000-005 000
-
-			//if numberOfItems >= 4000001 {
-			//	break
-			//}
-			numberOfItems += 1
-			totalBytesKey += len(key)
-			totalBytesValue += len(value)
-
-			if len(key) > 300000 || len(value) > 300000 {
-				fmt.Println("len key: ", len(key), " len value: ", len(value))
-			}
-
-			if (numberOfItems % 1000000) == 0 {
-				fmt.Printf("numb_Items: %d\n", numberOfItems)
-			}
-		}
-	}
-	fmt.Printf("numb_Items_total: %d\n", numberOfItems)
-	t2 := time.Now()
-	fmt.Printf("totalBytesKey: %d\n", totalBytesKey)
-	fmt.Printf("totalBytesValue: %d\n", totalBytesValue)
-
-	fmt.Printf("It took : %f seconds", t2.Sub(t1).Seconds())
 }
 
 func serverMessageHandling(server net.Listener, gdb *gossip.Store) {
@@ -214,14 +154,6 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 	fmt.Println("sending to client")
 
 	snap := gossip.SnapshotOfLastEpoch
-	//if snap == nil {
-	//	var err error
-	//	snap, err = gdb.GetMainDb().GetSnapshot()
-	//	if err != nil {
-	//		log.Warn(err.Error())
-	//		snap = nil
-	//	}
-	//}
 	if snap == nil {
 		err := "Server doesn't have snapshot for epoch initialized"
 		log.Warn(err)
