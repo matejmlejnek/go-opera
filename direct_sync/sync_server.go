@@ -75,7 +75,7 @@ func InitServer(gdb *gossip.Store, gossipPath string) {
 
 	//go snapshotService()
 
-	TestIterateTroughDb(gdb)
+	//TestIterateTroughDb(gdb)
 
 	//go testFunction()
 	//go testNetxxxVal()
