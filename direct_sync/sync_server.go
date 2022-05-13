@@ -3,10 +3,12 @@ package direct_sync
 import (
 	"bufio"
 	"bytes"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
 	"github.com/Fantom-foundation/go-opera/integration"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"net"
@@ -19,7 +21,7 @@ import (
 
 const serverSocketPort = "7002"
 const RECOMMENDED_MIN_BUNDLE_SIZE = 10000000
-const PROGRESS_LOGGING_FREQUENCY = 5000000
+const LOGGING_INTERVAL = 10 * time.Second
 const PEER_LIMIT = 1
 
 var performanceSocketWrite time.Duration
@@ -29,6 +31,8 @@ var performanceFlushIdCompare time.Duration
 var PeerCounter = SafePeerCounter{v: 0}
 
 var EstimateGossipSize func() uint64 = nil
+
+var p2pPrivateKey *ecdsa.PrivateKey
 
 type SafePeerCounter struct {
 	mu sync.Mutex
@@ -55,7 +59,7 @@ func (c *SafePeerCounter) ReleasedConnection() {
 	log.Info(fmt.Sprintf("Released connection - total: %d", c.v))
 }
 
-func InitServer(gdb *gossip.Store, gossipPath string) {
+func InitServer(gdb *gossip.Store, gossipPath string, key *ecdsa.PrivateKey) {
 	EstimateGossipSize = func() uint64 {
 		var size uint64
 		err := filepath.Walk(gossipPath, func(_ string, info os.FileInfo, err error) error {
@@ -72,6 +76,8 @@ func InitServer(gdb *gossip.Store, gossipPath string) {
 		}
 		return size
 	}
+
+	p2pPrivateKey = key
 
 	//go snapshotService()
 
@@ -170,17 +176,17 @@ func connectionHandler(connection net.Conn, gdb *gossip.Store) {
 	challenge, err := readChallenge(stream)
 	if err != nil {
 		sendOverheadError(writer, err.Error())
-		log.Warn("Error while receiving challenge: ", err)
+		log.Warn("Error while receiving challenge: ", "error", err)
 		return
 	}
 	err = sendChallengeAck(writer, challenge)
 	if err != nil {
-		log.Warn("Error while sending ChallengeAck: ", err)
+		log.Warn("Error while sending ChallengeAck: ", "error", err)
 		return
 	}
 
 	//reading command
-	var receivedCommand string
+	var receivedCommand []byte
 	receivedCommand, err = readCommand(stream)
 	if err != nil {
 		sendOverheadError(writer, err.Error())
@@ -188,7 +194,7 @@ func connectionHandler(connection net.Conn, gdb *gossip.Store) {
 		return
 	}
 
-	if receivedCommand == "get" {
+	if string(receivedCommand) == "get" {
 		if PeerCounter.AllowNewConnection() {
 			defer PeerCounter.ReleasedConnection()
 			sendFileToClient(writer, gdb)
@@ -196,22 +202,24 @@ func connectionHandler(connection net.Conn, gdb *gossip.Store) {
 			sendOverheadError(writer, "Server is at maximum peer capacity")
 		}
 	} else {
-		sendOverheadError(writer, "Bad command: "+receivedCommand)
+		sendOverheadError(writer, "Bad command: "+string(receivedCommand))
 	}
 }
 
-func sendChallengeAck(writer *bufio.Writer, challenge string) error {
-	//	todo public key switch challenge for signature
-	signature := challenge
+func sendChallengeAck(writer *bufio.Writer, challenge []byte) error {
+	signature, err := signHash(&challenge)
+	if err != nil {
+		return err
+	}
 
 	return sendOverheadMessage(writer, signature)
 }
 
-func readChallenge(stream *rlp.Stream) (string, error) {
+func readChallenge(stream *rlp.Stream) ([]byte, error) {
 	return readOverheadMessage(stream)
 }
 
-func readCommand(stream *rlp.Stream) (string, error) {
+func readCommand(stream *rlp.Stream) ([]byte, error) {
 	return readOverheadMessage(stream)
 }
 
@@ -233,6 +241,8 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 
 	startTime = time.Now()
 
+	ticker := time.NewTicker(LOGGING_INTERVAL)
+
 	iterator := snap.NewIterator(nil, nil)
 	defer iterator.Release()
 
@@ -251,10 +261,15 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 		performanceFlushIdCompare += time.Now().Sub(timeSt)
 
 		i += 1
-		if i%PROGRESS_LOGGING_FREQUENCY == 0 {
-			printServerPerformance()
-			fmt.Println("Process: ", i)
+		select {
+		case <-ticker.C:
+			{
+				printServerPerformance()
+				fmt.Println("Process: ", i)
+			}
+		default:
 		}
+
 		key := iterator.Key()
 		value := iterator.Value()
 		if value == nil {
@@ -269,13 +284,7 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 
 		if currentLength > RECOMMENDED_MIN_BUNDLE_SIZE {
 			sentItems = sentItems + len(itemsToSend)
-			var timeSt = time.Now()
-			hash := getHashOfKeyValuesInBundle(&itemsToSend)
-			var timeSt2 = time.Now()
-			performanceHash += timeSt2.Sub(timeSt)
-
-			err := sendBundle(writer, &itemsToSend, &currentLength, hash)
-			performanceSocketWrite += time.Now().Sub(timeSt2)
+			err := sendBundle(writer, &itemsToSend, &currentLength)
 			if err != nil {
 				fmt.Println(fmt.Sprintf("sending pipe broken: %v", err.Error()))
 				break
@@ -285,10 +294,7 @@ func sendFileToClient(writer *bufio.Writer, gdb *gossip.Store) {
 
 	if len(itemsToSend) > 0 {
 		sentItems = sentItems + len(itemsToSend)
-		var timeSt = time.Now()
-		hash := getHashOfKeyValuesInBundle(&itemsToSend)
-		performanceHash += time.Now().Sub(timeSt)
-		err = sendBundle(writer, &itemsToSend, &currentLength, hash)
+		err = sendBundle(writer, &itemsToSend, &currentLength)
 		if err != nil {
 			log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
 		}
@@ -308,19 +314,41 @@ func sendEstimatedSizeMessage(writer *bufio.Writer) error {
 		estimatedSize = EstimateGossipSize()
 	}
 	log.Info("estimated size: " + strconv.FormatUint(estimatedSize, 10))
-	return sendOverheadMessage(writer, strconv.FormatUint(estimatedSize, 10))
+	return sendOverheadMessage(writer, []byte(strconv.FormatUint(estimatedSize, 10)))
 }
 
 func sendBundle(writer *bufio.Writer,
-	itemsToSend *[]Item, currentLength *int, hash []byte) error {
-	var bundle = BundleOfItems{false, hash, getSignature(&hash), *itemsToSend}
+	itemsToSend *[]Item, currentLength *int) error {
 
-	defer func() {
-		writer.Flush()
-		*itemsToSend = []Item{}
-		*currentLength = 0
-	}()
-	return rlp.Encode(writer, bundle)
+	var timeSt = time.Now()
+	hash := getHashOfKeyValuesInBundle(itemsToSend)
+	var timeSt2 = time.Now()
+	performanceHash += timeSt2.Sub(timeSt)
+	signature, err := signHash(&hash)
+	if err != nil {
+		return err
+	}
+	var timeSt3 = time.Now()
+	performanceSignatures += timeSt3.Sub(timeSt2)
+
+	var bundle = BundleOfItems{false, hash, signature, *itemsToSend}
+
+	err = rlp.Encode(writer, bundle)
+
+	_ = writer.Flush()
+	*itemsToSend = []Item{}
+	*currentLength = 0
+
+	performanceSocketWrite += time.Now().Sub(timeSt3)
+	return err
+}
+
+func signHash(message *[]byte) ([]byte, error) {
+	signature, err := crypto.Sign(*message, p2pPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	return signature, nil
 }
 
 func sendBundleFinished(writer *bufio.Writer) error {
@@ -331,13 +359,13 @@ func sendBundleFinished(writer *bufio.Writer) error {
 }
 
 func sendOverheadError(writer *bufio.Writer, error string) {
-	challenge := OverheadMessage{ErrorOccured: true, Payload: error}
+	challenge := OverheadMessage{ErrorOccured: true, Payload: []byte(error)}
 	rlp.Encode(writer, challenge)
 	writer.Flush()
 }
 
 func printServerPerformance() {
 	var totalTime = time.Now().Sub(startTime)
-	var rest = totalTime - performanceHash - performanceSocketWrite - performanceFlushIdCompare
-	log.Info("performance: ", "totalTime", totalTime, "performanceHash", performanceHash, "performanceSocketWrite", performanceSocketWrite, "performanceFlushIdCompare", performanceFlushIdCompare, "restTime", rest)
+	var rest = totalTime - performanceHash - performanceSignatures - performanceSocketWrite - performanceFlushIdCompare
+	log.Info("performance: ", "totalTime", totalTime, "performanceHash", performanceHash, "performanceSignatures", performanceSignatures, "performanceSocketWrite", performanceSocketWrite, "performanceFlushIdCompare", performanceFlushIdCompare, "restTime", rest)
 }
