@@ -395,11 +395,6 @@ func makeNode(ctx *cli.Context, cfg *config, genesis integration.InputGenesis) (
 	_ = genesis.Close()
 	metrics.SetDataDir(cfg.Node.DataDir)
 
-	if ctx.GlobalBool(DirectSyncFlagServer.Name) {
-		log.Info("directsyncserver")
-		direct_sync.InitServer(gdb, path.Join(chaindataDir, "gossip"))
-	}
-
 	valKeystore := valkeystore.NewDefaultFileKeystore(path.Join(getValKeystoreDir(cfg.Node), "validator"))
 	valPubkey := cfg.Emitter.Validator.PubKey
 	if key := getFakeValidatorKey(ctx); key != nil && cfg.Emitter.Validator.ID != 0 {
@@ -439,6 +434,11 @@ func makeNode(ctx *cli.Context, cfg *config, genesis integration.InputGenesis) (
 	stack.RegisterAPIs(svc.APIs())
 	stack.RegisterProtocols(svc.Protocols())
 	stack.RegisterLifecycle(svc)
+
+	if ctx.GlobalBool(DirectSyncFlagServer.Name) {
+		log.Info("directsyncserver")
+		direct_sync.InitServer(gdb, path.Join(chaindataDir, "gossip"), stack.Server().PrivateKey)
+	}
 
 	return stack, svc, func() {
 		_ = stack.Close()

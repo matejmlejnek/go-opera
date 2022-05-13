@@ -2,13 +2,15 @@ package direct_sync
 
 import (
 	"bufio"
-	"crypto/sha512"
+	"bytes"
 	"errors"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
 	"github.com/Fantom-foundation/lachesis-base/kvdb"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/status-im/keycard-go/hexutils"
 	"io"
 	"math/rand"
 	"net"
@@ -20,6 +22,8 @@ import (
 
 var bundlesInWrittingQueueCounter uint32 = 0
 
+var publicKeyFromChallenge []byte
+
 type Item struct {
 	Key   []byte
 	Value []byte
@@ -27,7 +31,7 @@ type Item struct {
 
 type OverheadMessage struct {
 	ErrorOccured bool
-	Payload      string
+	Payload      []byte
 	//	progress? total size then estimate
 }
 
@@ -54,13 +58,12 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	reader := bufio.NewReader(connection)
 	stream := rlp.NewStream(reader, 0)
 
-	err := sendChallenge(writer)
+	challenge, err := sendChallenge(writer)
 	if err != nil {
 		log.Crit(fmt.Sprintf("\"Sending challenge:: %v", err))
 	}
 
-	//pubKey, err := readChallengeAck(stream)
-	_, err = readChallengeAck(stream)
+	err = readChallengeAck(stream, challenge)
 	if err != nil {
 		log.Crit(fmt.Sprintf("Read challenge ack: %v", err))
 	}
@@ -170,22 +173,28 @@ func readEstimatedSizeMessage(stream *rlp.Stream) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	parseUint, err := strconv.ParseUint(estimatedSize, 10, 64)
+	parseUint, err := strconv.ParseUint(string(estimatedSize), 10, 64)
 	if err != nil {
 		return 0, err
 	}
 	return parseUint, nil
 }
 
-func getSignature(hash *[]byte) []byte {
-	//TODO signatur
-	return []byte{1, 2, 3}
+func getPublicKey(hash *[]byte, signature *[]byte) []byte {
+	sigPublicKey, err := crypto.Ecrecover(*hash, *signature)
+	if err != nil {
+		log.Crit("PublicKeyRecovery", "error", err)
+	}
+	if len(sigPublicKey) == 0 {
+		log.Crit("PublicKeyRecoveryEmpty")
+	}
+	return sigPublicKey
 }
 
 func getHashOfKeyValuesInBundle(bundle *[]Item) []byte {
-	hasher := sha512.New()
-	_ = rlp.Encode(hasher, *bundle)
-	return hasher.Sum(nil)
+	var b bytes.Buffer
+	_ = rlp.Encode(io.Writer(&b), *bundle)
+	return crypto.Keccak256Hash(b.Bytes()).Bytes()
 }
 
 func readBundle(stream *rlp.Stream, b *BundleOfItems) error {
@@ -197,22 +206,24 @@ func readBundle(stream *rlp.Stream, b *BundleOfItems) error {
 }
 
 func sendGetCommand(writer *bufio.Writer) error {
-	return sendOverheadMessage(writer, "get")
+	return sendOverheadMessage(writer, []byte("get"))
 }
 
-func readChallengeAck(stream *rlp.Stream) (string, error) {
+func readChallengeAck(stream *rlp.Stream, challenge []byte) error {
 	payload, err := readOverheadMessage(stream)
 	if err != nil {
-		return "", err
+		return err
 	}
-	// todo pub key from original challenge and payload
-
-	return payload, nil
+	publicKeyFromChallenge = getPublicKey(&challenge, &payload)
+	log.Info("Challenge accepted", "public key", hexutils.BytesToHex(publicKeyFromChallenge))
+	return nil
 }
 
-func sendChallenge(writer *bufio.Writer) error {
-	randomNum := strconv.FormatInt(rand.Int63(), 10)
-	return sendOverheadMessage(writer, randomNum)
+func sendChallenge(writer *bufio.Writer) ([]byte, error) {
+	randomNum := []byte(strconv.FormatInt(rand.Int63(), 10))
+	challenge := crypto.Keccak256Hash(randomNum).Bytes()
+
+	return challenge, sendOverheadMessage(writer, challenge)
 }
 
 func verifySignatures(bundle *BundleOfItems) error {
@@ -222,30 +233,29 @@ func verifySignatures(bundle *BundleOfItems) error {
 		return errors.New("Hash not matching original")
 	}
 
-	signature := getSignature(&hash)
+	publicKey := getPublicKey(&hash, &bundle.Signature)
 
-	if !reflect.DeepEqual(signature, bundle.Signature) {
+	if !reflect.DeepEqual(publicKey, publicKeyFromChallenge) {
 		return errors.New("Signature not matching original")
 	}
-
 	return nil
 }
 
-func readOverheadMessage(stream *rlp.Stream) (string, error) {
+func readOverheadMessage(stream *rlp.Stream) ([]byte, error) {
 	e := OverheadMessage{}
 	err := stream.Decode(&e)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if e.ErrorOccured {
-		return "", errors.New("Error: " + e.Payload)
+		return nil, errors.New("Error: " + string(e.Payload))
 	}
 
 	return e.Payload, nil
 }
 
-func sendOverheadMessage(writer *bufio.Writer, message string) error {
+func sendOverheadMessage(writer *bufio.Writer, message []byte) error {
 	challenge := OverheadMessage{ErrorOccured: false, Payload: message}
 	err := rlp.Encode(writer, challenge)
 	if err != nil {
