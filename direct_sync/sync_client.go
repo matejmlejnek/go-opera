@@ -22,6 +22,10 @@ import (
 
 var bundlesInWrittingQueueCounter uint32 = 0
 
+const CompactThreshold = 50000000
+
+var nextCompact = CompactThreshold
+
 var publicKeyFromChallenge []byte
 
 type Item struct {
@@ -83,9 +87,12 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 	var receivedItems = 0
 
-	dbWriterQueue := make(chan []Item)
-	stopSignal := make(chan bool)
-	go dbWriter(dbWriterQueue, mainDB, gdb, stopSignal)
+	hashingQueue := make(chan *BundleOfItems)
+	dbWriterQueue := make(chan *[]Item)
+	stopWriterSignal := make(chan bool)
+	stopHashingSignal := make(chan bool)
+	go dbWriter(dbWriterQueue, mainDB, gdb, stopWriterSignal)
+	go hashingService(hashingQueue, dbWriterQueue, stopHashingSignal)
 
 	for {
 		bundle := BundleOfItems{}
@@ -102,14 +109,18 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 			break
 		}
 
-		err = verifySignatures(&bundle)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-
 		atomic.AddUint32(&bundlesInWrittingQueueCounter, 1)
-		dbWriterQueue <- bundle.Data
+
+		hashingQueue <- &bundle
 		receivedItems += len(bundle.Data)
+
+		if receivedItems > nextCompact {
+			nextCompact += CompactThreshold
+			err = gdb.GetMainDb().Compact([]byte{0x00}, []byte{0xFF})
+			if err != nil {
+				log.Crit("Compact pebble database.", "error", err)
+			}
+		}
 
 		select {
 		case <-ticker.C:
@@ -131,23 +142,43 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		time.Sleep(5 * time.Second)
 	}
 
-	stopSignal <- true
+	stopWriterSignal <- true
+	stopHashingSignal <- true
 	close(dbWriterQueue)
 
 	log.Info("Progress: 100%")
 	fmt.Println("Saved: ", receivedItems, " items.")
 }
 
-func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, stopSignal chan bool) {
+func hashingService(hashingQueue chan *BundleOfItems, dbWriterQueue chan *[]Item, stopSignal chan bool) {
+	for {
+		select {
+		case data := <-hashingQueue:
+			{
+				err := verifySignatures(data)
+				if err != nil {
+					log.Crit("Error signatures", "error", err)
+				}
+				dbWriterQueue <- &data.Data
+			}
+		case <-stopSignal:
+			{
+				break
+			}
+		}
+	}
+}
+
+func dbWriter(dbWriterQueue chan *[]Item, mainDB kvdb.Store, gdb *gossip.Store, stopSignal chan bool) {
 	for {
 		select {
 		case data := <-dbWriterQueue:
 			{
-				if len(data) == 0 {
+				if len(*data) == 0 {
 					continue
 				}
-				for i := range data {
-					err := mainDB.Put(data[i].Key, data[i].Value)
+				for i := range *data {
+					err := mainDB.Put((*data)[i].Key, (*data)[i].Value)
 
 					if err != nil {
 						log.Crit(fmt.Sprintf("Insert into db: %v", err))
@@ -157,6 +188,9 @@ func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, s
 				err := gdb.FlushDBs()
 				if err != nil {
 					log.Crit("Gossip flush: ", "err", err)
+				}
+				if err != nil {
+					return
 				}
 				atomic.AddUint32(&bundlesInWrittingQueueCounter, ^uint32(0))
 			}
