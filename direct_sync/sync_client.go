@@ -25,8 +25,14 @@ var performanceHash int64
 var performanceSignatures int64
 var performanceSocketRead int64
 var performanceDbWrite int64
+var performanceDbCompact int64
 
 var bundlesInWrittingQueueCounter uint32 = 0
+var receivedItems uint32 = 0
+
+const CompactThreshold uint32 = 5000000
+
+var nextCompact = CompactThreshold
 
 var publicKeyFromChallenge []byte
 
@@ -89,11 +95,12 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
 
-	var receivedItems = 0
-
-	dbWriterQueue := make(chan []Item)
-	stopSignal := make(chan bool)
-	go dbWriter(dbWriterQueue, mainDB, gdb, stopSignal)
+	hashingQueue := make(chan *BundleOfItems)
+	dbWriterQueue := make(chan *[]Item)
+	stopWriterSignal := make(chan bool)
+	stopHashingSignal := make(chan bool)
+	go dbWriter(dbWriterQueue, mainDB, gdb, stopWriterSignal)
+	go hashingService(hashingQueue, dbWriterQueue, stopHashingSignal)
 
 	for {
 		bundle := BundleOfItems{}
@@ -118,13 +125,12 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		}
 
 		atomic.AddUint32(&bundlesInWrittingQueueCounter, 1)
-		dbWriterQueue <- bundle.Data
-		receivedItems += len(bundle.Data)
+		hashingQueue <- &bundle
 
 		select {
 		case <-ticker.C:
 			{
-				log.Info(fmt.Sprintf("Received %d", receivedItems))
+				log.Info(fmt.Sprintf("Received %d", atomic.LoadUint32(&receivedItems)))
 				printClientPerformance()
 			}
 		default:
@@ -142,25 +148,45 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		time.Sleep(5 * time.Second)
 	}
 
-	stopSignal <- true
+	stopWriterSignal <- true
+	stopHashingSignal <- true
 	close(dbWriterQueue)
 
 	log.Info("Progress: 100%")
-	fmt.Println("Saved: ", receivedItems, " items.")
+	fmt.Println("Saved: ", atomic.LoadUint32(&receivedItems), " items.")
 }
 
-func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, stopSignal chan bool) {
+func hashingService(hashingQueue chan *BundleOfItems, dbWriterQueue chan *[]Item, stopSignal chan bool) {
+	for {
+		select {
+		case data := <-hashingQueue:
+			{
+				err := verifySignatures(data)
+				if err != nil {
+					log.Crit("Error signatures", "error", err)
+				}
+				dbWriterQueue <- &data.Data
+			}
+		case <-stopSignal:
+			{
+				break
+			}
+		}
+	}
+}
+
+func dbWriter(dbWriterQueue chan *[]Item, mainDB kvdb.Store, gdb *gossip.Store, stopSignal chan bool) {
 	for {
 		select {
 		case data := <-dbWriterQueue:
 			{
-				if len(data) == 0 {
+				if len(*data) == 0 {
 					continue
 				}
 
 				var timeSt = time.Now()
-				for i := range data {
-					err := mainDB.Put(data[i].Key, data[i].Value)
+				for i := range *data {
+					err := mainDB.Put((*data)[i].Key, (*data)[i].Value)
 
 					if err != nil {
 						log.Crit(fmt.Sprintf("Insert into db: %v", err))
@@ -172,6 +198,18 @@ func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, s
 					log.Crit("Gossip flush: ", "err", err)
 				}
 				atomic.AddInt64(&performanceDbWrite, int64(time.Now().Sub(timeSt)))
+
+				var currentItems = atomic.AddUint32(&receivedItems, uint32(len(*data)))
+
+				if currentItems > atomic.LoadUint32(&nextCompact) {
+					atomic.AddUint32(&nextCompact, CompactThreshold)
+					var timeSt = time.Now()
+					err = mainDB.Compact([]byte{0x00}, []byte{0xFF})
+					atomic.AddInt64(&performanceDbCompact, int64(time.Now().Sub(timeSt)))
+					if err != nil {
+						log.Crit("Compact pebble database.", "error", err)
+					}
+				}
 				atomic.AddUint32(&bundlesInWrittingQueueCounter, ^uint32(0))
 			}
 		case <-stopSignal:
@@ -289,6 +327,5 @@ func sendOverheadMessage(writer *bufio.Writer, message []byte) error {
 
 func printClientPerformance() {
 	var totalTime = int64(time.Now().Sub(startTime))
-	var rest = totalTime - atomic.LoadInt64(&performanceHash) - atomic.LoadInt64(&performanceSignatures) - atomic.LoadInt64(&performanceSocketRead) - atomic.LoadInt64(&performanceDbWrite)
-	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(performanceHash), "performanceSignatures", time.Duration(performanceSignatures), "performanceSocketRead", time.Duration(performanceSocketRead), "performanceDbWrite", time.Duration(performanceDbWrite), "restTime", time.Duration(rest))
+	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(performanceHash), "performanceSignatures", time.Duration(performanceSignatures), "performanceSocketRead", time.Duration(performanceSocketRead), "performanceDbWrite", time.Duration(performanceDbWrite), "performanceDbCompact", time.Duration(performanceDbCompact))
 }
