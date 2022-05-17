@@ -22,6 +22,8 @@ import (
 
 var bundlesInWrittingQueueCounter uint32 = 0
 
+var buffer = make([]byte, 1000)
+
 var publicKeyFromChallenge []byte
 
 type Item struct {
@@ -81,61 +83,26 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
 
-	var receivedItems = 0
+	var totalLength = 0
 
 	dbWriterQueue := make(chan []Item)
 	stopSignal := make(chan bool)
 	go dbWriter(dbWriterQueue, mainDB, gdb, stopSignal)
 
 	for {
-		bundle := BundleOfItems{}
-		err := readBundle(stream, &bundle)
+		length, err := io.ReadFull(reader, buffer)
 		if err != nil {
-			if err == io.EOF {
-				log.Crit("EOF - end of stream")
-			} else {
-				log.Crit(fmt.Sprintf("Reading bundle: %v", err))
-			}
-		}
-
-		if bundle.Finished {
 			break
 		}
-
-		err = verifySignatures(&bundle)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-
-		atomic.AddUint32(&bundlesInWrittingQueueCounter, 1)
-		dbWriterQueue <- bundle.Data
-		receivedItems += len(bundle.Data)
-
-		select {
-		case <-ticker.C:
-			{
-				log.Info(fmt.Sprintf("Received %d", receivedItems))
-			}
-		default:
-		}
+		totalLength += length
 	}
 	ticker.Stop()
-
-	for {
-		stillBeingProcessed := atomic.LoadUint32(&bundlesInWrittingQueueCounter)
-		if stillBeingProcessed == 0 {
-			log.Info("Flush finished.")
-			break
-		}
-		log.Info("Flush not complete waiting 5 sec.")
-		time.Sleep(5 * time.Second)
-	}
 
 	stopSignal <- true
 	close(dbWriterQueue)
 
 	log.Info("Progress: 100%")
-	fmt.Println("Saved: ", receivedItems, " items.")
+	log.Crit("Received size: ", "totalLength", totalLength)
 }
 
 func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, stopSignal chan bool) {

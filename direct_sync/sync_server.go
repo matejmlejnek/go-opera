@@ -29,6 +29,8 @@ var PeerCounter = SafePeerCounter{v: 0}
 
 var EstimateGossipSize func() uint64 = nil
 
+var totalTransferedData = 0
+
 var p2pPrivateKey *ecdsa.PrivateKey
 
 type SafePeerCounter struct {
@@ -186,6 +188,8 @@ func sendFileToClient(writer *bufio.Writer) {
 
 	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
 
+	var totalUsefullDataSent = 0
+
 	var currentLength = 0
 	var itemsToSend []Item
 	for iterator.Next() {
@@ -217,6 +221,7 @@ func sendFileToClient(writer *bufio.Writer) {
 
 		if currentLength > RECOMMENDED_MIN_BUNDLE_SIZE {
 			sentItems = sentItems + len(itemsToSend)
+			totalUsefullDataSent += currentLength
 			err := sendBundle(writer, &itemsToSend, &currentLength)
 			if err != nil {
 				fmt.Println(fmt.Sprintf("sending pipe broken: %v", err.Error()))
@@ -228,6 +233,7 @@ func sendFileToClient(writer *bufio.Writer) {
 
 	if len(itemsToSend) > 0 {
 		sentItems = sentItems + len(itemsToSend)
+		totalUsefullDataSent += currentLength
 		err = sendBundle(writer, &itemsToSend, &currentLength)
 		if err != nil {
 			log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
@@ -238,6 +244,8 @@ func sendFileToClient(writer *bufio.Writer) {
 	if err != nil {
 		log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
 	}
+
+	log.Info("Data from db: ", "totalUsefullDataSent", totalUsefullDataSent, "totalTransferedData", totalTransferedData)
 
 	log.Info(fmt.Sprintf("Sent: %d items.", sentItems))
 }
@@ -261,6 +269,13 @@ func sendBundle(writer *bufio.Writer,
 	}
 
 	var bundle = BundleOfItems{false, hash, signature, *itemsToSend}
+
+	var b bytes.Buffer
+	foo := bufio.NewWriter(&b)
+	err = rlp.Encode(foo, bundle)
+	log.Warn("Comparisment", "currentLength", *currentLength, "writterSize", b.Len())
+
+	totalTransferedData += b.Len()
 
 	err = rlp.Encode(writer, bundle)
 	_ = writer.Flush()
