@@ -20,6 +20,12 @@ import (
 	"time"
 )
 
+var startTime time.Time
+var performanceHash int64
+var performanceSignatures int64
+var performanceSocketRead int64
+var performanceDbWrite int64
+
 var bundlesInWrittingQueueCounter uint32 = 0
 
 var publicKeyFromChallenge []byte
@@ -79,6 +85,8 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	}
 	log.Info("Estimated size: " + strconv.FormatUint(bytesSizeEstimate, 10))
 
+	startTime = time.Now()
+
 	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
 
 	var receivedItems = 0
@@ -89,7 +97,9 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 	for {
 		bundle := BundleOfItems{}
+		var timeSt = time.Now()
 		err := readBundle(stream, &bundle)
+		atomic.AddInt64(&performanceSocketRead, int64(time.Now().Sub(timeSt)))
 		if err != nil {
 			if err == io.EOF {
 				log.Crit("EOF - end of stream")
@@ -115,6 +125,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		case <-ticker.C:
 			{
 				log.Info(fmt.Sprintf("Received %d", receivedItems))
+				printClientPerformance()
 			}
 		default:
 		}
@@ -146,6 +157,8 @@ func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, s
 				if len(data) == 0 {
 					continue
 				}
+
+				var timeSt = time.Now()
 				for i := range data {
 					err := mainDB.Put(data[i].Key, data[i].Value)
 
@@ -158,6 +171,7 @@ func dbWriter(dbWriterQueue chan []Item, mainDB kvdb.Store, gdb *gossip.Store, s
 				if err != nil {
 					log.Crit("Gossip flush: ", "err", err)
 				}
+				atomic.AddInt64(&performanceDbWrite, int64(time.Now().Sub(timeSt)))
 				atomic.AddUint32(&bundlesInWrittingQueueCounter, ^uint32(0))
 			}
 		case <-stopSignal:
@@ -227,17 +241,22 @@ func sendChallenge(writer *bufio.Writer) ([]byte, error) {
 }
 
 func verifySignatures(bundle *BundleOfItems) error {
+	var timeSt = time.Now()
 	hash := getHashOfKeyValuesInBundle(&(bundle.Data))
 
 	if !reflect.DeepEqual(hash, bundle.Hash) {
 		return errors.New("Hash not matching original")
 	}
 
+	var timeSt2 = time.Now()
+	atomic.AddInt64(&performanceHash, int64(timeSt2.Sub(timeSt)))
+
 	publicKey := getPublicKey(&hash, &bundle.Signature)
 
 	if !reflect.DeepEqual(publicKey, publicKeyFromChallenge) {
 		return errors.New("Signature not matching original")
 	}
+	atomic.AddInt64(&performanceSignatures, int64(time.Now().Sub(timeSt2)))
 	return nil
 }
 
@@ -266,4 +285,10 @@ func sendOverheadMessage(writer *bufio.Writer, message []byte) error {
 		return err
 	}
 	return nil
+}
+
+func printClientPerformance() {
+	var totalTime = int64(time.Now().Sub(startTime))
+	var rest = totalTime - atomic.LoadInt64(&performanceHash) - atomic.LoadInt64(&performanceSignatures) - atomic.LoadInt64(&performanceSocketRead) - atomic.LoadInt64(&performanceDbWrite)
+	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(performanceHash), "performanceSignatures", time.Duration(performanceSignatures), "performanceSocketRead", time.Duration(performanceSocketRead), "performanceDbWrite", time.Duration(performanceDbWrite), "restTime", time.Duration(rest))
 }
