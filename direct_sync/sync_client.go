@@ -349,5 +349,5 @@ func printClientPerformance(mainDB kvdb.Store) {
 		log.Info("pebble stats", "error", err)
 		return
 	}
-	log.Info("pebble stats", "value", stat)
+	fmt.Println(stat)
 }
