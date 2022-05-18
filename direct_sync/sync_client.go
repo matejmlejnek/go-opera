@@ -144,7 +144,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		case <-ticker.C:
 			{
 				log.Info(fmt.Sprintf("Received %d", atomic.LoadUint64(&receivedItems)))
-				printClientPerformance()
+				printClientPerformance(mainDB)
 			}
 		default:
 		}
@@ -176,6 +176,9 @@ hashingServiceLoop:
 			}
 		case data := <-hashingQueue:
 			{
+				if data == nil {
+					continue
+				}
 				err := verifySignatures(data)
 				if err != nil {
 					log.Crit("Error signatures", "error", err)
@@ -196,6 +199,9 @@ dbWriterLoop:
 			}
 		case data := <-dbWriterQueue:
 			{
+				if data == nil {
+					continue
+				}
 				if len(*data) == 0 {
 					continue
 				}
@@ -334,8 +340,14 @@ func sendOverheadMessage(writer *bufio.Writer, message []byte) error {
 	return nil
 }
 
-func printClientPerformance() {
-	var totalTime = int64(time.Now().Sub(startTime))
+func printClientPerformance(mainDB kvdb.Store) {
+	var totalTime = int64(time.Since(startTime))
 	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(atomic.LoadInt64(&performanceHash)), "performanceSignatures", time.Duration(atomic.LoadInt64(&performanceSignatures)),
 		"performanceSocketRead", time.Duration(atomic.LoadInt64(&performanceSocketRead)), "performanceDbWrite", time.Duration(atomic.LoadInt64(&performanceDbWrite)))
+	stat, err := mainDB.Stat("leveldb.metrics")
+	if err != nil {
+		log.Info("pebble stats", "error", err)
+		return
+	}
+	log.Info("pebble stats", "value", stat)
 }
