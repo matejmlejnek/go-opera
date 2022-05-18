@@ -437,7 +437,7 @@ func makeNode(ctx *cli.Context, cfg *config, genesis integration.InputGenesis) (
 
 	if ctx.GlobalBool(DirectSyncFlagServer.Name) {
 		log.Info("directsyncserver")
-		direct_sync.InitServer(gdb, path.Join(chaindataDir, "gossip"), stack.Server().PrivateKey)
+		direct_sync.InitServer(path.Join(chaindataDir, "gossip"), stack.Server().PrivateKey)
 	}
 
 	return stack, svc, func() {

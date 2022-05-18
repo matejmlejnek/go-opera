@@ -59,7 +59,7 @@ func DownloadDataFromServer(address string, gdb *gossip.Store) {
 	//get port and ip address to dial
 	connection, err := net.Dial("tcp", address+":"+serverSocketPort)
 	if err != nil {
-		log.Error(err.Error())
+		log.Crit(err.Error())
 	}
 	getDataFromServer(connection, gdb)
 }
@@ -167,6 +167,10 @@ func hashingService(hashingQueue chan *BundleOfItems, dbWriterQueue chan *[]Item
 hashingServiceLoop:
 	for {
 		select {
+		case <-stopSignal:
+			{
+				break hashingServiceLoop
+			}
 		case data := <-hashingQueue:
 			{
 				err := verifySignatures(data)
@@ -177,10 +181,6 @@ hashingServiceLoop:
 				dbWriterQueue <- &data.Data
 				atomic.AddInt64(&performanceChannelInsertDb, int64(time.Now().Sub(timeSt)))
 			}
-		case <-stopSignal:
-			{
-				break hashingServiceLoop
-			}
 		}
 	}
 }
@@ -189,9 +189,12 @@ func dbWriter(dbWriterQueue chan *[]Item, mainDB kvdb.Store, gdb *gossip.Store, 
 dbWriterLoop:
 	for {
 		select {
+		case <-stopSignal:
+			{
+				break dbWriterLoop
+			}
 		case data := <-dbWriterQueue:
 			{
-				log.Info("dbWriter", "count", atomic.LoadUint32(bundlesInWrittingQueueCounter))
 				if len(*data) == 0 {
 					continue
 				}
@@ -213,10 +216,6 @@ dbWriterLoop:
 				atomic.AddUint64(&receivedItems, uint64(len(*data)))
 
 				atomic.AddUint32(bundlesInWrittingQueueCounter, ^uint32(0))
-			}
-		case <-stopSignal:
-			{
-				break dbWriterLoop
 			}
 		}
 	}

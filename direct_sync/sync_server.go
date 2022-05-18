@@ -57,7 +57,7 @@ func (c *SafePeerCounter) ReleasedConnection() {
 	log.Info(fmt.Sprintf("Released connection - total: %d", c.v))
 }
 
-func InitServer(gdb *gossip.Store, gossipPath string, key *ecdsa.PrivateKey) {
+func InitServer(gossipPath string, key *ecdsa.PrivateKey) {
 	EstimateGossipSize = func() uint64 {
 		var size uint64
 		err := filepath.Walk(gossipPath, func(_ string, info os.FileInfo, err error) error {
@@ -80,14 +80,14 @@ func InitServer(gdb *gossip.Store, gossipPath string, key *ecdsa.PrivateKey) {
 
 	server, error := net.Listen("tcp", "0.0.0.0:"+serverSocketPort)
 	if error != nil {
-		log.Error("There was an error starting the server" + error.Error())
+		log.Crit("There was an error starting the server" + error.Error())
 		return
 	}
 
-	go serverMessageHandling(server, gdb)
+	go serverMessageHandling(server)
 }
 
-func serverMessageHandling(server net.Listener, gdb *gossip.Store) {
+func serverMessageHandling(server net.Listener) {
 
 	for {
 		connection, error := server.Accept()
@@ -97,11 +97,11 @@ func serverMessageHandling(server net.Listener, gdb *gossip.Store) {
 		}
 		fmt.Println("connected")
 
-		go connectionHandler(connection, gdb)
+		go connectionHandler(connection)
 	}
 }
 
-func connectionHandler(connection net.Conn, gdb *gossip.Store) {
+func connectionHandler(connection net.Conn) {
 	defer func() {
 		err := connection.Close()
 		if err != nil {
@@ -287,6 +287,11 @@ func sendingService(writer *bufio.Writer, sendingQueue chan *BundleOfItems, bund
 sendingServiceLoop:
 	for {
 		select {
+		case <-stopSignal:
+			{
+				log.Info("Sending service stopped")
+				break sendingServiceLoop
+			}
 		case bundle := <-sendingQueue:
 			{
 				err := rlp.Encode(writer, bundle)
@@ -295,16 +300,11 @@ sendingServiceLoop:
 					break
 				}
 				_ = writer.Flush()
+				// bundlesInSendingQueueCounter decrement
 				atomic.AddUint32(bundlesInSendingQueueCounter, ^uint32(0))
-			}
-		case <-stopSignal:
-			{
-				log.Info("Sending service stopped")
-				break sendingServiceLoop
 			}
 		}
 	}
-
 }
 
 func sendEstimatedSizeMessage(writer *bufio.Writer) error {
