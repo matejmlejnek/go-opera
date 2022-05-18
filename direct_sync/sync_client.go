@@ -9,6 +9,7 @@ import (
 	"github.com/Fantom-foundation/lachesis-base/kvdb"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/status-im/keycard-go/hexutils"
 	"io"
@@ -20,22 +21,22 @@ import (
 	"time"
 )
 
-var startTime time.Time
-var performanceHash int64
-var performanceSignatures int64
-var performanceSocketRead int64
-var performanceDbWrite int64
-var performanceDbCompact int64
-var performanceChannelInsertHash int64
-var performanceChannelInsertDb int64
+var (
+	startTime             time.Time
+	performanceHash       int64
+	performanceSignatures int64
+	performanceSocketRead int64
+	performanceDbWrite    int64
 
-var receivedItems uint64 = 0
+	metricHashingTime    = metrics.GetOrRegisterCounter("directsync/hash", nil)
+	metricSignatureTime  = metrics.GetOrRegisterCounter("directsync/signature", nil)
+	metricSocketReadTime = metrics.GetOrRegisterCounter("directsync/socket/read", nil)
+	metricDbWriteTime    = metrics.GetOrRegisterCounter("directsync/db/write", nil)
 
-const CompactThreshold uint64 = 5000000
+	receivedItems uint64 = 0
 
-var nextCompact = CompactThreshold
-
-var publicKeyFromChallenge []byte
+	publicKeyFromChallenge []byte
+)
 
 type Item struct {
 	Key   []byte
@@ -97,10 +98,10 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
 
 	var bundlesInWrittingQueueCounter uint32 = 0
-	dbWriterQueue := make(chan *[]Item)
+	dbWriterQueue := make(chan *[]Item, 1)
 	stopWriterSignal := make(chan bool, 1)
 
-	hashingQueue := make(chan *BundleOfItems)
+	hashingQueue := make(chan *BundleOfItems, 1)
 	stopHashingSignal := make(chan bool, 1)
 
 	defer func() {
@@ -119,7 +120,10 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		bundle := BundleOfItems{}
 		var timeSt = time.Now()
 		err := readBundle(stream, &bundle)
-		atomic.AddInt64(&performanceSocketRead, int64(time.Now().Sub(timeSt)))
+		timeSince := int64(time.Since(timeSt))
+		atomic.AddInt64(&performanceSocketRead, timeSince)
+		metricSocketReadTime.Inc(timeSince)
+
 		if err != nil {
 			if err == io.EOF {
 				log.Crit("EOF - end of stream")
@@ -134,9 +138,8 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		}
 
 		atomic.AddUint32(&bundlesInWrittingQueueCounter, 1)
-		var timeSt2 = time.Now()
 		hashingQueue <- &bundle
-		atomic.AddInt64(&performanceChannelInsertHash, int64(time.Now().Sub(timeSt2)))
+
 		select {
 		case <-ticker.C:
 			{
@@ -177,9 +180,7 @@ hashingServiceLoop:
 				if err != nil {
 					log.Crit("Error signatures", "error", err)
 				}
-				var timeSt = time.Now()
 				dbWriterQueue <- &data.Data
-				atomic.AddInt64(&performanceChannelInsertDb, int64(time.Now().Sub(timeSt)))
 			}
 		}
 	}
@@ -211,7 +212,9 @@ dbWriterLoop:
 				if err != nil {
 					log.Crit("Gossip flush: ", "err", err)
 				}
-				atomic.AddInt64(&performanceDbWrite, int64(time.Now().Sub(timeSt)))
+				timeSince := int64(time.Since(timeSt))
+				atomic.AddInt64(&performanceDbWrite, timeSince)
+				metricDbWriteTime.Inc(timeSince)
 
 				atomic.AddUint64(&receivedItems, uint64(len(*data)))
 
@@ -287,15 +290,20 @@ func verifySignatures(bundle *BundleOfItems) error {
 		return errors.New("Hash not matching original")
 	}
 
+	timeSince := int64(time.Since(timeSt))
+	atomic.AddInt64(&performanceHash, timeSince)
+	metricHashingTime.Inc(timeSince)
 	var timeSt2 = time.Now()
-	atomic.AddInt64(&performanceHash, int64(timeSt2.Sub(timeSt)))
 
 	publicKey := getPublicKey(&hash, &bundle.Signature)
 
 	if !reflect.DeepEqual(publicKey, publicKeyFromChallenge) {
 		return errors.New("Signature not matching original")
 	}
-	atomic.AddInt64(&performanceSignatures, int64(time.Now().Sub(timeSt2)))
+
+	timeSince2 := int64(time.Since(timeSt2))
+	atomic.AddInt64(&performanceSignatures, timeSince2)
+	metricSignatureTime.Inc(timeSince2)
 	return nil
 }
 
@@ -329,6 +337,5 @@ func sendOverheadMessage(writer *bufio.Writer, message []byte) error {
 func printClientPerformance() {
 	var totalTime = int64(time.Now().Sub(startTime))
 	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(atomic.LoadInt64(&performanceHash)), "performanceSignatures", time.Duration(atomic.LoadInt64(&performanceSignatures)),
-		"performanceSocketRead", time.Duration(atomic.LoadInt64(&performanceSocketRead)), "performanceDbWrite", time.Duration(atomic.LoadInt64(&performanceDbWrite)), "performanceDbCompact",
-		time.Duration(atomic.LoadInt64(&performanceDbCompact)), "performanceChannelInsertHash", time.Duration(atomic.LoadInt64(&performanceChannelInsertHash)), "performanceChannelInsertDb", time.Duration(atomic.LoadInt64(&performanceChannelInsertDb)))
+		"performanceSocketRead", time.Duration(atomic.LoadInt64(&performanceSocketRead)), "performanceDbWrite", time.Duration(atomic.LoadInt64(&performanceDbWrite)))
 }
