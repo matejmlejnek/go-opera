@@ -210,23 +210,9 @@ dbWriterLoop:
 				}
 				atomic.AddInt64(&performanceDbWrite, int64(time.Now().Sub(timeSt)))
 
-				var currentItems = atomic.AddUint64(&receivedItems, uint64(len(*data)))
+				atomic.AddUint64(&receivedItems, uint64(len(*data)))
 
-				if currentItems > atomic.LoadUint64(&nextCompact) {
-					atomic.AddUint64(&nextCompact, CompactThreshold)
-					go func() {
-						var timeSt = time.Now()
-						err = mainDB.Compact([]byte{0x00}, []byte{0xFF})
-						atomic.AddInt64(&performanceDbCompact, int64(time.Now().Sub(timeSt)))
-						if err != nil {
-							log.Crit("Compact pebble database.", "error", err)
-						}
-						atomic.AddUint32(bundlesInWrittingQueueCounter, ^uint32(0))
-					}()
-				} else {
-					atomic.AddUint32(bundlesInWrittingQueueCounter, ^uint32(0))
-				}
-
+				atomic.AddUint32(bundlesInWrittingQueueCounter, ^uint32(0))
 			}
 		case <-stopSignal:
 			{
