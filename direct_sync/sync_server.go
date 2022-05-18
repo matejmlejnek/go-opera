@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -186,8 +187,26 @@ func sendFileToClient(writer *bufio.Writer) {
 
 	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
 
+	var bundlesInSendingQueueCounter uint32 = 0
+
+	sendingQueue := make(chan *BundleOfItems)
+	stopSignal := make(chan bool, 1)
+	errorOccuredSignal := make(chan error, 1)
+	defer func() {
+		close(sendingQueue)
+
+		stopSignal <- true
+		close(stopSignal)
+	}()
+
+	go sendingService(writer, sendingQueue, &bundlesInSendingQueueCounter, stopSignal, errorOccuredSignal)
+
 	var currentLength = 0
 	var itemsToSend []Item
+
+	var errorOccured error = nil
+
+downloadingLoop:
 	for iterator.Next() {
 		if bytes.Compare(iterator.Key(), integration.FlushIDKey) == 0 {
 			log.Info("Skipping flush key")
@@ -196,6 +215,11 @@ func sendFileToClient(writer *bufio.Writer) {
 
 		i += 1
 		select {
+		case errorOccured = <-errorOccuredSignal:
+			{
+				log.Warn("errorOccuredSignal")
+				break downloadingLoop
+			}
 		case <-ticker.C:
 			{
 				fmt.Println("Process: ", i)
@@ -217,7 +241,7 @@ func sendFileToClient(writer *bufio.Writer) {
 
 		if currentLength > RECOMMENDED_MIN_BUNDLE_SIZE {
 			sentItems = sentItems + len(itemsToSend)
-			err := sendBundle(writer, &itemsToSend, &currentLength)
+			err := sendBundle(sendingQueue, &itemsToSend, &currentLength, &bundlesInSendingQueueCounter)
 			if err != nil {
 				fmt.Println(fmt.Sprintf("sending pipe broken: %v", err.Error()))
 				break
@@ -226,12 +250,28 @@ func sendFileToClient(writer *bufio.Writer) {
 	}
 	ticker.Stop()
 
+	if errorOccured != nil {
+		log.Warn("RLP encoding", "error", errorOccured)
+		log.Warn("Send to client did not finish successfully...")
+		return
+	}
+
 	if len(itemsToSend) > 0 {
 		sentItems = sentItems + len(itemsToSend)
-		err = sendBundle(writer, &itemsToSend, &currentLength)
+		err = sendBundle(sendingQueue, &itemsToSend, &currentLength, &bundlesInSendingQueueCounter)
 		if err != nil {
 			log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
 		}
+	}
+
+	for {
+		stillBeingProcessed := atomic.LoadUint32(&bundlesInSendingQueueCounter)
+		if stillBeingProcessed == 0 {
+			log.Info("Sending finished.")
+			break
+		}
+		log.Info("Waiting another 5 sec for last items in queue to be sent.")
+		time.Sleep(5 * time.Second)
 	}
 
 	err = sendBundleFinished(writer)
@@ -240,6 +280,31 @@ func sendFileToClient(writer *bufio.Writer) {
 	}
 
 	log.Info(fmt.Sprintf("Sent: %d items.", sentItems))
+}
+
+func sendingService(writer *bufio.Writer, sendingQueue chan *BundleOfItems, bundlesInSendingQueueCounter *uint32, stopSignal chan bool, errorOccuredSignal chan error) {
+	defer close(errorOccuredSignal)
+sendingServiceLoop:
+	for {
+		select {
+		case bundle := <-sendingQueue:
+			{
+				err := rlp.Encode(writer, bundle)
+				if err != nil {
+					errorOccuredSignal <- err
+					break
+				}
+				_ = writer.Flush()
+				atomic.AddUint32(bundlesInSendingQueueCounter, ^uint32(0))
+			}
+		case <-stopSignal:
+			{
+				log.Info("Sending service stopped")
+				break sendingServiceLoop
+			}
+		}
+	}
+
 }
 
 func sendEstimatedSizeMessage(writer *bufio.Writer) error {
@@ -251,8 +316,7 @@ func sendEstimatedSizeMessage(writer *bufio.Writer) error {
 	return sendOverheadMessage(writer, []byte(strconv.FormatUint(estimatedSize, 10)))
 }
 
-func sendBundle(writer *bufio.Writer,
-	itemsToSend *[]Item, currentLength *int) error {
+func sendBundle(sendingQueue chan *BundleOfItems, itemsToSend *[]Item, currentLength *int, bundlesInSendingQueueCounter *uint32) error {
 	hash := getHashOfKeyValuesInBundle(itemsToSend)
 
 	signature, err := signHash(&hash)
@@ -262,8 +326,9 @@ func sendBundle(writer *bufio.Writer,
 
 	var bundle = BundleOfItems{false, hash, signature, *itemsToSend}
 
-	err = rlp.Encode(writer, bundle)
-	_ = writer.Flush()
+	atomic.AddUint32(bundlesInSendingQueueCounter, 1)
+	sendingQueue <- &bundle
+
 	*itemsToSend = []Item{}
 	*currentLength = 0
 
