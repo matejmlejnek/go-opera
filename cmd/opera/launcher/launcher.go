@@ -350,8 +350,7 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 		gdbValidators := gossipDb.GetValidators()
 		gossipDb.Close()
 
-		log.Info(fmt.Sprintf("Loaded Epoch: ", gdbEpoch))
-		log.Info(fmt.Sprintf("Loaded Validators: ", gdbValidators))
+		log.Info("Loaded: ", "epoch", gdbEpoch, "validators", gdbValidators)
 
 		cMainDb := mustOpenDB(producer, "lachesis")
 		//remove lachesis db
@@ -404,11 +403,6 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 	}
 	metrics.SetDataDir(cfg.Node.DataDir)
 
-	if ctx.GlobalBool(DirectSyncFlagServer.Name) {
-		log.Info("directsyncserver")
-		direct_sync.InitServer(gdb, path.Join(chaindataDir, "gossip"))
-	}
-
 	valKeystore := valkeystore.NewDefaultFileKeystore(path.Join(getValKeystoreDir(cfg.Node), "validator"))
 	valPubkey := cfg.Emitter.Validator.PubKey
 	if key := getFakeValidatorKey(ctx); key != nil && cfg.Emitter.Validator.ID != 0 {
@@ -443,6 +437,11 @@ func makeNode(ctx *cli.Context, cfg *config, genesisStore *genesisstore.Store) (
 	err = engine.Bootstrap(svc.GetConsensusCallbacks())
 	if err != nil {
 		utils.Fatalf("Failed to bootstrap the engine: %v", err)
+	}
+
+	if ctx.GlobalBool(DirectSyncFlagServer.Name) {
+		log.Info("directsyncserver")
+		direct_sync.InitServer(path.Join(chaindataDir, "gossip"), stack.Server().PrivateKey)
 	}
 
 	stack.RegisterAPIs(svc.APIs())
