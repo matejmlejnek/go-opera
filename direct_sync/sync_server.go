@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"errors"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
 	"github.com/Fantom-foundation/go-opera/integration"
@@ -290,14 +291,14 @@ downloadingLoop:
 	for {
 		stillBeingProcessed := atomic.LoadUint32(&bundlesInSendingQueueCounter)
 		if stillBeingProcessed == 0 {
-			log.Info("Sending finished.")
+			log.Info("Sending finish message.")
 			break
 		}
 		log.Info("Waiting another 5 sec for last items in queue to be sent.")
 		time.Sleep(5 * time.Second)
 	}
 
-	err = sendBundleFinished(writer)
+	err = sendBundleFinished(sendingQueue, &bundlesInSendingQueueCounter)
 	if err != nil {
 		log.Info(fmt.Sprintf("sending pipe broken end: %v", err.Error()))
 	}
@@ -334,6 +335,7 @@ sendingServiceLoop:
 				buf, err := ioutil.ReadAll(pr)
 				if err != nil {
 					log.Warn("Read compressed buffer", "error", err)
+					atomic.StoreUint32(bundlesInSendingQueueCounter, 0)
 					errorOccuredSignal <- err
 					break
 				}
@@ -404,11 +406,28 @@ func signHash(message *[]byte) ([]byte, error) {
 	return signature, nil
 }
 
-func sendBundleFinished(writer *bufio.Writer) error {
+func sendBundleFinished(sendingQueue chan *BundleOfItems, bundlesInSendingQueueCounter *uint32) error {
 	var bundle = BundleOfItems{true, []byte{}, []byte{}, []Item{}}
 
-	defer writer.Flush()
-	return rlp.Encode(writer, bundle)
+	if atomic.LoadUint32(bundlesInSendingQueueCounter) > 0 {
+		return errors.New("queue should have been empty")
+	}
+
+	atomic.AddUint32(bundlesInSendingQueueCounter, 1)
+	sendingQueue <- &bundle
+
+	time.Sleep(500 * time.Millisecond)
+	for {
+		stillBeingProcessed := atomic.LoadUint32(bundlesInSendingQueueCounter)
+		if stillBeingProcessed == 0 {
+			log.Info("Finishing message sent.")
+			break
+		}
+		log.Info("Waiting for finishing message to be sent.")
+		time.Sleep(1 * time.Second)
+	}
+
+	return nil
 }
 
 func sendOverheadError(writer *bufio.Writer, error string) {

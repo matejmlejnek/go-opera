@@ -30,8 +30,8 @@ var (
 	performanceDbWrite           int64
 	performanceCompressionDecode int64
 
-	performanceCompressedCount  uint64
-	performanceDecompresedCount uint64
+	performanceCompressedCount   uint64
+	performanceDecompressedCount uint64
 
 	metricHashingTime           = metrics.GetOrRegisterCounter("directsync/hash", nil)
 	metricSignatureTime         = metrics.GetOrRegisterCounter("directsync/signature", nil)
@@ -39,8 +39,8 @@ var (
 	metricDbWriteTime           = metrics.GetOrRegisterCounter("directsync/db/write", nil)
 	metricCompressionDecodeTime = metrics.GetOrRegisterCounter("directsync/compression/decode", nil)
 
-	metricCompresedSize   = metrics.GetOrRegisterCounter("directsync/compression/compressed", nil)
-	metricDecompresedSize = metrics.GetOrRegisterCounter("directsync/compression/decompressed", nil)
+	metricCompressedSize   = metrics.GetOrRegisterCounter("directsync/compression/compressed", nil)
+	metricDecompressedSize = metrics.GetOrRegisterCounter("directsync/compression/decompressed", nil)
 
 	receivedItems uint64 = 0
 
@@ -272,15 +272,15 @@ func readBundle(stream *rlp.Stream, b *BundleOfItems) error {
 
 	err := stream.Decode(&byteArr)
 	if err != nil {
-		log.Crit("RLP encoding package", "error", err)
+		return err
 	}
 	pr0, pw0 := io.Pipe()
 	go func() {
 		compressedLen, err := io.Copy(pw0, bytes.NewReader(byteArr))
-		metricCompresedSize.Inc(compressedLen)
 		if err != nil {
 			log.Crit("From stream to compression", "error", err)
 		}
+		metricCompressedSize.Inc(compressedLen)
 		atomic.AddUint64(&performanceCompressedCount, uint64(compressedLen))
 		_ = pw0.Close()
 	}()
@@ -295,8 +295,9 @@ func readBundle(stream *rlp.Stream, b *BundleOfItems) error {
 		if err != nil {
 			log.Crit("From stream to compression", "error", err)
 		}
-		atomic.AddUint64(&performanceDecompresedCount, uint64(decompressedLen))
-		metricDecompresedSize.Inc(decompressedLen)
+		atomic.AddUint64(&performanceDecompressedCount, uint64(decompressedLen))
+		metricDecompressedSize.Inc(decompressedLen)
+		_ = pw.Close()
 		timeSince := int64(time.Since(timeSt))
 		atomic.AddInt64(&performanceCompressionDecode, timeSince)
 		metricCompressionDecodeTime.Inc(timeSince)
@@ -306,7 +307,8 @@ func readBundle(stream *rlp.Stream, b *BundleOfItems) error {
 
 	err = streamRlp.Decode(b)
 	if err != nil {
-		log.Crit("RLP decode", "error", err)
+		log.Warn("RLP decode", "error", err)
+		return err
 	}
 	timeSince2 := int64(time.Since(timeSt0))
 	atomic.AddInt64(&performanceSocketRead, timeSince2)
@@ -395,5 +397,5 @@ func printClientPerformance() {
 	var totalTime = int64(time.Since(startTime))
 	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(atomic.LoadInt64(&performanceHash)), "performanceSignatures", time.Duration(atomic.LoadInt64(&performanceSignatures)),
 		"performanceSocketRead", time.Duration(atomic.LoadInt64(&performanceSocketRead)), "performanceDbWrite", time.Duration(atomic.LoadInt64(&performanceDbWrite)), "performanceCompressionDecode", time.Duration(atomic.LoadInt64(&performanceCompressionDecode)))
-	log.Info("data size: ", "decompresed", atomic.LoadUint64(&performanceDecompresedCount), "compresed", atomic.LoadUint64(&performanceCompressedCount))
+	log.Info("data size: ", "decompressed", atomic.LoadUint64(&performanceDecompressedCount), "compressed", atomic.LoadUint64(&performanceCompressedCount))
 }
