@@ -319,6 +319,9 @@ sendingServiceLoop:
 			}
 		case bundle := <-sendingQueue:
 			{
+				if bundle == nil {
+					continue
+				}
 				pr, pw := io.Pipe()
 				zw := lz4.NewWriter(pw)
 
