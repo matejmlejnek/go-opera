@@ -206,7 +206,7 @@ func sendFileToClient(writer *bufio.Writer) {
 
 	var bundlesInSendingQueueCounter uint32 = 0
 
-	sendingQueue := make(chan *BundleOfItems, 1)
+	sendingQueue := make(chan *BundleOfItems)
 	stopSignal := make(chan bool, 1)
 	errorOccuredSignal := make(chan error, 1)
 	defer func() {

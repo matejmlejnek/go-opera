@@ -108,10 +108,10 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	ticker := time.NewTicker(PROGRESS_LOGGING_FREQUENCY)
 
 	var bundlesInWrittingQueueCounter uint32 = 0
-	dbWriterQueue := make(chan *[]Item, 1)
+	dbWriterQueue := make(chan *[]Item)
 	stopWriterSignal := make(chan bool, 1)
 
-	hashingQueue := make(chan *BundleOfItems, 1)
+	hashingQueue := make(chan *BundleOfItems)
 	stopHashingSignal := make(chan bool, 1)
 
 	defer func() {
