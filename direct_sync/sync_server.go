@@ -11,7 +11,10 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/pierrec/lz4/v4"
 	"github.com/status-im/keycard-go/hexutils"
+	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -130,7 +133,7 @@ func connectionHandler(connection net.Conn) {
 	receivedCommand, err = readCommand(stream)
 	if err != nil {
 		sendOverheadError(writer, err.Error())
-		log.Warn("Error while receiving command: ", err)
+		log.Warn("Error while receiving command: ", "error", err)
 		return
 	}
 
@@ -284,6 +287,7 @@ downloadingLoop:
 
 func sendingService(writer *bufio.Writer, sendingQueue chan *BundleOfItems, bundlesInSendingQueueCounter *uint32, stopSignal chan bool, errorOccuredSignal chan error) {
 	defer close(errorOccuredSignal)
+
 sendingServiceLoop:
 	for {
 		select {
@@ -294,11 +298,34 @@ sendingServiceLoop:
 			}
 		case bundle := <-sendingQueue:
 			{
-				err := rlp.Encode(writer, bundle)
+				pr, pw := io.Pipe()
+				zw := lz4.NewWriter(pw)
+
+				go func() {
+					err := rlp.Encode(zw, bundle)
+					if err != nil {
+						log.Warn("Error while RLP", "error", err)
+						errorOccuredSignal <- err
+					}
+					_ = zw.Close()
+					_ = pw.Close()
+				}()
+
+				//_, err := io.Copy(writer, pr)
+				//if err != nil {
+				//	log.Warn("Error while sending data", "error", err)
+				//	errorOccuredSignal <- err
+				//}
+
+				buf, err := ioutil.ReadAll(pr)
+				err = rlp.Encode(writer, buf)
 				if err != nil {
+					log.Warn("Error while RLP byte slice", "error", err)
 					errorOccuredSignal <- err
-					break
 				}
+
+				//TODO metrics compressedSize
+
 				_ = writer.Flush()
 				// bundlesInSendingQueueCounter decrement
 				atomic.AddUint32(bundlesInSendingQueueCounter, ^uint32(0))

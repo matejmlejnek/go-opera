@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/pierrec/lz4/v4"
 	"github.com/status-im/keycard-go/hexutils"
 	"io"
 	"math/rand"
@@ -22,16 +23,24 @@ import (
 )
 
 var (
-	startTime             time.Time
-	performanceHash       int64
-	performanceSignatures int64
-	performanceSocketRead int64
-	performanceDbWrite    int64
+	startTime                    time.Time
+	performanceHash              int64
+	performanceSignatures        int64
+	performanceSocketRead        int64
+	performanceDbWrite           int64
+	performanceCompressionDecode int64
 
-	metricHashingTime    = metrics.GetOrRegisterCounter("directsync/hash", nil)
-	metricSignatureTime  = metrics.GetOrRegisterCounter("directsync/signature", nil)
-	metricSocketReadTime = metrics.GetOrRegisterCounter("directsync/socket/read", nil)
-	metricDbWriteTime    = metrics.GetOrRegisterCounter("directsync/db/write", nil)
+	performanceCompressedCount  uint64
+	performanceDecompresedCount uint64
+
+	metricHashingTime           = metrics.GetOrRegisterCounter("directsync/hash", nil)
+	metricSignatureTime         = metrics.GetOrRegisterCounter("directsync/signature", nil)
+	metricSocketReadTime        = metrics.GetOrRegisterCounter("directsync/socket/read", nil)
+	metricDbWriteTime           = metrics.GetOrRegisterCounter("directsync/db/write", nil)
+	metricCompressionDecodeTime = metrics.GetOrRegisterCounter("directsync/compression/decode", nil)
+
+	metricCompresedSize   = metrics.GetOrRegisterCounter("directsync/compression/compressed", nil)
+	metricDecompresedSize = metrics.GetOrRegisterCounter("directsync/compression/decompressed", nil)
 
 	receivedItems uint64 = 0
 
@@ -70,6 +79,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 	writer := bufio.NewWriter(connection)
 	reader := bufio.NewReader(connection)
+
 	stream := rlp.NewStream(reader, 0)
 
 	challenge, err := sendChallenge(writer)
@@ -118,11 +128,8 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 	for {
 		bundle := BundleOfItems{}
-		var timeSt = time.Now()
+
 		err := readBundle(stream, &bundle)
-		timeSince := int64(time.Since(timeSt))
-		atomic.AddInt64(&performanceSocketRead, timeSince)
-		metricSocketReadTime.Inc(timeSince)
 
 		if err != nil {
 			if err == io.EOF {
@@ -144,7 +151,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		case <-ticker.C:
 			{
 				log.Info(fmt.Sprintf("Received %d", atomic.LoadUint64(&receivedItems)))
-				printClientPerformance(mainDB)
+				printClientPerformance()
 			}
 		default:
 		}
@@ -260,7 +267,51 @@ func getHashOfKeyValuesInBundle(bundle *[]Item) []byte {
 }
 
 func readBundle(stream *rlp.Stream, b *BundleOfItems) error {
-	err := stream.Decode(b)
+	var byteArr []byte
+	var timeSt0 = time.Now()
+
+	err := stream.Decode(&byteArr)
+	if err != nil {
+		log.Crit("RLP encoding package", "error", err)
+	}
+	pr0, pw0 := io.Pipe()
+	go func() {
+		compressedLen, err := io.Copy(pw0, bytes.NewReader(byteArr))
+		metricCompresedSize.Inc(compressedLen)
+		if err != nil {
+			log.Crit("From stream to compression", "error", err)
+		}
+		atomic.AddUint64(&performanceCompressedCount, uint64(compressedLen))
+		_ = pw0.Close()
+	}()
+
+	zr := lz4.NewReader(pr0)
+
+	pr, pw := io.Pipe()
+
+	go func() {
+		var timeSt = time.Now()
+		decompressedLen, err := io.Copy(pw, zr)
+		if err != nil {
+			log.Crit("From stream to compression", "error", err)
+		}
+		atomic.AddUint64(&performanceDecompresedCount, uint64(decompressedLen))
+		metricDecompresedSize.Inc(decompressedLen)
+		timeSince := int64(time.Since(timeSt))
+		atomic.AddInt64(&performanceCompressionDecode, timeSince)
+		metricCompressionDecodeTime.Inc(timeSince)
+	}()
+
+	streamRlp := rlp.NewStream(pr, 0)
+
+	err = streamRlp.Decode(b)
+	if err != nil {
+		log.Crit("RLP decode", "error", err)
+	}
+	timeSince2 := int64(time.Since(timeSt0))
+	atomic.AddInt64(&performanceSocketRead, timeSince2)
+	metricSocketReadTime.Inc(timeSince2)
+
 	if err != nil {
 		return err
 	}
@@ -340,8 +391,9 @@ func sendOverheadMessage(writer *bufio.Writer, message []byte) error {
 	return nil
 }
 
-func printClientPerformance(mainDB kvdb.Store) {
+func printClientPerformance() {
 	var totalTime = int64(time.Since(startTime))
 	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(atomic.LoadInt64(&performanceHash)), "performanceSignatures", time.Duration(atomic.LoadInt64(&performanceSignatures)),
-		"performanceSocketRead", time.Duration(atomic.LoadInt64(&performanceSocketRead)), "performanceDbWrite", time.Duration(atomic.LoadInt64(&performanceDbWrite)))
+		"performanceSocketRead", time.Duration(atomic.LoadInt64(&performanceSocketRead)), "performanceDbWrite", time.Duration(atomic.LoadInt64(&performanceDbWrite)), "performanceCompressionDecode", time.Duration(atomic.LoadInt64(&performanceCompressionDecode)))
+	log.Info("data size: ", "decompresed", atomic.LoadUint64(&performanceDecompresedCount), "compresed", atomic.LoadUint64(&performanceCompressedCount))
 }
