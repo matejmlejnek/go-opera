@@ -10,6 +10,7 @@ import (
 	"github.com/Fantom-foundation/go-opera/integration"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/pierrec/lz4/v4"
 	"github.com/status-im/keycard-go/hexutils"
@@ -29,11 +30,21 @@ const RECOMMENDED_MIN_BUNDLE_SIZE = 10000000
 const PROGRESS_LOGGING_FREQUENCY = 30 * time.Second
 const PEER_LIMIT = 1
 
-var PeerCounter = SafePeerCounter{v: 0}
+var (
+	performanceSocketWrite       int64
+	performanceDbRead            int64
+	performanceCompressionEncode int64
 
-var EstimateGossipSize func() uint64 = nil
+	metricSocketWriteTime       = metrics.GetOrRegisterCounter("directsync/socket/write", nil)
+	metricDbReadTime            = metrics.GetOrRegisterCounter("directsync/db/read", nil)
+	metricCompressionEncodeTime = metrics.GetOrRegisterCounter("directsync/compression/encode", nil)
 
-var p2pPrivateKey *ecdsa.PrivateKey
+	PeerCounter = SafePeerCounter{v: 0}
+
+	EstimateGossipSize func() uint64 = nil
+
+	p2pPrivateKey *ecdsa.PrivateKey
+)
 
 type SafePeerCounter struct {
 	mu sync.Mutex
@@ -168,6 +179,8 @@ func readCommand(stream *rlp.Stream) ([]byte, error) {
 func sendFileToClient(writer *bufio.Writer) {
 	fmt.Println("sending to client")
 
+	serverStartTime := time.Now()
+
 	snap := gossip.SnapshotOfLastEpoch
 	if snap == nil {
 		err := "Server doesn't have snapshot for epoch initialized"
@@ -208,6 +221,7 @@ func sendFileToClient(writer *bufio.Writer) {
 	var itemsToSend []Item
 
 	var errorOccured error = nil
+	timeSt := time.Now()
 
 downloadingLoop:
 	for iterator.Next() {
@@ -226,6 +240,7 @@ downloadingLoop:
 		case <-ticker.C:
 			{
 				fmt.Println("Process: ", i)
+				printServerPerformance(&serverStartTime)
 			}
 		default:
 		}
@@ -242,6 +257,10 @@ downloadingLoop:
 		currentLength += len(value)
 		currentLength += len(key)
 
+		timeSince := int64(time.Since(timeSt))
+		atomic.AddInt64(&performanceDbRead, timeSince)
+		metricDbReadTime.Inc(timeSince)
+
 		if currentLength > RECOMMENDED_MIN_BUNDLE_SIZE {
 			sentItems = sentItems + len(itemsToSend)
 			err := sendBundle(sendingQueue, &itemsToSend, &currentLength, &bundlesInSendingQueueCounter)
@@ -250,6 +269,7 @@ downloadingLoop:
 				break
 			}
 		}
+		timeSt = time.Now()
 	}
 	ticker.Stop()
 
@@ -301,6 +321,7 @@ sendingServiceLoop:
 				pr, pw := io.Pipe()
 				zw := lz4.NewWriter(pw)
 
+				var timeSt = time.Now()
 				go func() {
 					err := rlp.Encode(zw, bundle)
 					if err != nil {
@@ -310,23 +331,28 @@ sendingServiceLoop:
 					_ = zw.Close()
 					_ = pw.Close()
 				}()
-
-				//_, err := io.Copy(writer, pr)
-				//if err != nil {
-				//	log.Warn("Error while sending data", "error", err)
-				//	errorOccuredSignal <- err
-				//}
-
 				buf, err := ioutil.ReadAll(pr)
+				if err != nil {
+					log.Warn("Read compressed buffer", "error", err)
+					errorOccuredSignal <- err
+					break
+				}
+				timeSince := int64(time.Since(timeSt))
+				atomic.AddInt64(&performanceCompressionEncode, timeSince)
+				metricCompressionEncodeTime.Inc(timeSince)
+
+				timeSt1 := time.Now()
 				err = rlp.Encode(writer, buf)
 				if err != nil {
 					log.Warn("Error while RLP byte slice", "error", err)
 					errorOccuredSignal <- err
 				}
 
-				//TODO metrics compressedSize
-
 				_ = writer.Flush()
+				timeSince2 := int64(time.Since(timeSt1))
+				atomic.AddInt64(&performanceSocketWrite, timeSince2)
+				metricSocketWriteTime.Inc(timeSince2)
+
 				// bundlesInSendingQueueCounter decrement
 				atomic.AddUint32(bundlesInSendingQueueCounter, ^uint32(0))
 			}
@@ -344,12 +370,20 @@ func sendEstimatedSizeMessage(writer *bufio.Writer) error {
 }
 
 func sendBundle(sendingQueue chan *BundleOfItems, itemsToSend *[]Item, currentLength *int, bundlesInSendingQueueCounter *uint32) error {
+	var timeSt = time.Now()
 	hash := getHashOfKeyValuesInBundle(itemsToSend)
+	timeSince := int64(time.Since(timeSt))
+	atomic.AddInt64(&performanceHash, timeSince)
+	metricHashingTime.Inc(timeSince)
 
+	var timeSt2 = time.Now()
 	signature, err := signHash(&hash)
 	if err != nil {
 		return err
 	}
+	timeSince2 := int64(time.Since(timeSt2))
+	atomic.AddInt64(&performanceSignatures, timeSince2)
+	metricSignatureTime.Inc(timeSince2)
 
 	var bundle = BundleOfItems{false, hash, signature, *itemsToSend}
 
@@ -381,4 +415,10 @@ func sendOverheadError(writer *bufio.Writer, error string) {
 	challenge := OverheadMessage{ErrorOccured: true, Payload: []byte(error)}
 	rlp.Encode(writer, challenge)
 	writer.Flush()
+}
+
+func printServerPerformance(serverStartTime *time.Time) {
+	var totalTime = int64(time.Since(*serverStartTime))
+	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(atomic.LoadInt64(&performanceHash)), "performanceSignatures", time.Duration(atomic.LoadInt64(&performanceSignatures)),
+		"performanceSocketWrite", time.Duration(atomic.LoadInt64(&performanceSocketWrite)), "performanceDbRead", time.Duration(atomic.LoadInt64(&performanceDbRead)), "performanceCompressionEncode", time.Duration(atomic.LoadInt64(&performanceCompressionEncode)))
 }
