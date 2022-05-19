@@ -344,10 +344,4 @@ func printClientPerformance(mainDB kvdb.Store) {
 	var totalTime = int64(time.Since(startTime))
 	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(atomic.LoadInt64(&performanceHash)), "performanceSignatures", time.Duration(atomic.LoadInt64(&performanceSignatures)),
 		"performanceSocketRead", time.Duration(atomic.LoadInt64(&performanceSocketRead)), "performanceDbWrite", time.Duration(atomic.LoadInt64(&performanceDbWrite)))
-	stat, err := mainDB.Stat("leveldb.metrics")
-	if err != nil {
-		log.Info("pebble stats", "error", err)
-		return
-	}
-	fmt.Println(stat)
 }
