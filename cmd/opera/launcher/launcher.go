@@ -349,8 +349,7 @@ func makeNode(ctx *cli.Context, cfg *config, genesis integration.InputGenesis) (
 		gdbValidators := gossipDb.GetValidators()
 		gossipDb.Close()
 
-		log.Info(fmt.Sprintf("Loaded Epoch: ", gdbEpoch))
-		log.Info(fmt.Sprintf("Loaded Validators: ", gdbValidators))
+		log.Info("Loaded: ", "epoch", gdbEpoch, "validators", gdbValidators)
 
 		cMainDb := mustOpenDB(producer, "lachesis")
 		//remove lachesis db
