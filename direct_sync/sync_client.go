@@ -125,7 +125,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 		case <-ticker.C:
 			{
 				log.Info(fmt.Sprintf("Received %d", receivedItems))
-				printClientPerformance()
+				printClientPerformance(mainDB)
 			}
 		default:
 		}
@@ -287,8 +287,15 @@ func sendOverheadMessage(writer *bufio.Writer, message []byte) error {
 	return nil
 }
 
-func printClientPerformance() {
+func printClientPerformance(mainDB kvdb.Store) {
 	var totalTime = int64(time.Now().Sub(startTime))
 	var rest = totalTime - atomic.LoadInt64(&performanceHash) - atomic.LoadInt64(&performanceSignatures) - atomic.LoadInt64(&performanceSocketRead) - atomic.LoadInt64(&performanceDbWrite)
 	log.Info("performance: ", "totalTime", time.Duration(totalTime), "performanceHash", time.Duration(performanceHash), "performanceSignatures", time.Duration(performanceSignatures), "performanceSocketRead", time.Duration(performanceSocketRead), "performanceDbWrite", time.Duration(performanceDbWrite), "restTime", time.Duration(rest))
+
+	stat, err := mainDB.Stat("leveldb.metrics")
+	if err != nil {
+		log.Info("pebble stats", "error", err)
+		return
+	}
+	fmt.Println(stat)
 }
