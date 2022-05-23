@@ -112,7 +112,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	hashingQueue := make(chan *BundleOfItems, 100)
 	stopHashingSignal := make(chan bool, 1)
 
-	var batcher kvdb.Batch = nil
+	var batcher = gdb.GetMainDb().NewBatch()
 	defer func() {
 		close(hashingQueue)
 
