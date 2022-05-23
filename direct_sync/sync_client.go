@@ -75,8 +75,6 @@ func DownloadDataFromServer(address string, gdb *gossip.Store) {
 }
 
 func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
-	mainDB := gdb.GetMainDb()
-
 	writer := bufio.NewWriter(connection)
 	reader := bufio.NewReader(connection)
 
@@ -114,6 +112,7 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 	hashingQueue := make(chan *BundleOfItems, 100)
 	stopHashingSignal := make(chan bool, 1)
 
+	var batcher kvdb.Batch = nil
 	defer func() {
 		close(hashingQueue)
 
@@ -122,9 +121,16 @@ func getDataFromServer(connection net.Conn, gdb *gossip.Store) {
 
 		stopWriterSignal <- true
 		close(stopWriterSignal)
+
+		if batcher.ValueSize() > 0 {
+			err := batcher.Write()
+			if err != nil {
+				log.Info("Batcher in defer:", "error", err)
+			}
+		}
 	}()
 	go hashingService(hashingQueue, dbWriterQueue, stopHashingSignal)
-	go dbWriter(dbWriterQueue, mainDB, gdb, stopWriterSignal, &bundlesInWrittingQueueCounter)
+	go dbWriter(dbWriterQueue, gdb, &batcher, stopWriterSignal, &bundlesInWrittingQueueCounter)
 
 	for {
 		bundle := BundleOfItems{}
@@ -196,7 +202,8 @@ hashingServiceLoop:
 	}
 }
 
-func dbWriter(dbWriterQueue chan *[]Item, mainDB kvdb.Store, gdb *gossip.Store, stopSignal chan bool, bundlesInWrittingQueueCounter *uint32) {
+func dbWriter(dbWriterQueue chan *[]Item, gdb *gossip.Store, batcher *kvdb.Batch, stopSignal chan bool, bundlesInWrittingQueueCounter *uint32) {
+
 dbWriterLoop:
 	for {
 		select {
@@ -212,19 +219,29 @@ dbWriterLoop:
 				if len(*data) == 0 {
 					continue
 				}
+
 				var timeSt = time.Now()
 				for i := range *data {
-					err := mainDB.Put((*data)[i].Key, (*data)[i].Value)
+					err := (*batcher).Put((*data)[i].Key, (*data)[i].Value)
 
 					if err != nil {
 						log.Crit(fmt.Sprintf("Insert into db: %v", err))
 					}
 				}
 
-				err := gdb.FlushDBs()
-				if err != nil {
-					log.Crit("Gossip flush: ", "err", err)
+				if (*batcher).ValueSize() > kvdb.IdealBatchSize {
+					err := (*batcher).Write()
+					if err != nil {
+						log.Crit(fmt.Sprintf("Batcher error db: %v", err))
+					}
+					(*batcher).Reset()
+
+					err = gdb.FlushDBs()
+					if err != nil {
+						log.Crit("Gossip flush: ", "err", err)
+					}
 				}
+
 				timeSince := int64(time.Since(timeSt))
 				atomic.AddInt64(&performanceDbWrite, timeSince)
 				metricDbWriteTime.Inc(timeSince)
