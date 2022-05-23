@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/Fantom-foundation/go-opera/gossip"
@@ -72,7 +73,7 @@ func (c *SafePeerCounter) ReleasedConnection() {
 	log.Info(fmt.Sprintf("Released connection - total: %d", c.v))
 }
 
-func InitServer(gossipPath string, key *ecdsa.PrivateKey) {
+func InitServer(gossipPath string, key *ecdsa.PrivateKey, gdb *gossip.Store) {
 	EstimateGossipSize = func() uint64 {
 		var size uint64
 		err := filepath.Walk(gossipPath, func(_ string, info os.FileInfo, err error) error {
@@ -99,7 +100,58 @@ func InitServer(gossipPath string, key *ecdsa.PrivateKey) {
 		return
 	}
 
+	go TestIterateTroughDb(gdb)
+
 	go serverMessageHandling(server)
+}
+
+func TestIterateTroughDb(gdb *gossip.Store) {
+	snap, err := gdb.GetMainDb().GetSnapshot()
+	if err != nil {
+		log.Crit("Error unable to get snapshot", "error", err)
+	}
+
+	numberOfItems := 0
+
+	totalBytesKey := 0
+	totalBytesValue := 0
+
+	t1 := time.Now()
+
+	mp := make(map[string]int)
+
+	iterator := snap.NewIterator(nil, nil)
+	defer iterator.Release()
+	for iterator.Next() {
+		key := iterator.Key()
+		value := iterator.Value()
+		numberOfItems += 1
+		totalBytesKey += len(key)
+		totalBytesValue += len(value)
+
+		keyStr := hex.EncodeToString(key)
+		if len(keyStr) > 4 {
+			keyStr = keyStr[0:3]
+		}
+		mp[keyStr] = mp[keyStr] + 1
+
+		if (numberOfItems % 10000000) == 0 {
+			fmt.Printf("numb_Items: %d\n", numberOfItems)
+		}
+	}
+
+	log.Info("Total number of prefix occurances:", "total count", len(mp))
+
+	for prefix, count := range mp {
+		fmt.Printf("prefix: %s count: %d\n", prefix, count)
+	}
+
+	fmt.Printf("numb_Items_total: %d\n", numberOfItems)
+	t2 := time.Now()
+	fmt.Printf("totalBytesKey: %d\n", totalBytesKey)
+	fmt.Printf("totalBytesValue: %d\n", totalBytesValue)
+
+	log.Info("IterateTroughDbFinished", "duration", t2.Sub(t1))
 }
 
 func serverMessageHandling(server net.Listener) {
