@@ -129,9 +129,12 @@ func TestIterateTroughDb(gdb *gossip.Store) {
 		totalBytesKey += len(key)
 		totalBytesValue += len(value)
 
-		keyStr := hex.EncodeToString(key)
-		if len(keyStr) > 4 {
-			keyStr = keyStr[0:3]
+		kk := hex.EncodeToString(key)
+		var bs []byte
+		bs, _ = hex.DecodeString(kk)
+		keyStr := string(bs)
+		if len(keyStr) > 1 {
+			keyStr = keyStr[0:1]
 		}
 		mp[keyStr] = mp[keyStr] + 1
 
