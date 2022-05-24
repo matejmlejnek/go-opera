@@ -118,7 +118,7 @@ func TestIterateTroughDb(gdb *gossip.Store) {
 
 	t1 := time.Now()
 
-	mp := make(map[string]int)
+	mp := make(map[string]uint64)
 
 	iterator := snap.NewIterator(nil, nil)
 	defer iterator.Release()
@@ -136,7 +136,7 @@ func TestIterateTroughDb(gdb *gossip.Store) {
 		if len(keyStr) > 1 {
 			keyStr = keyStr[0:1]
 		}
-		mp[keyStr] = mp[keyStr] + 1
+		mp[keyStr] = mp[keyStr] + uint64(len(key)+len(value))
 
 		if (numberOfItems % 10000000) == 0 {
 			fmt.Printf("numb_Items: %d\n", numberOfItems)
