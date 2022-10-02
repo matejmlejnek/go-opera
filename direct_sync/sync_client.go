@@ -182,7 +182,6 @@ func readEstimatedSizeMessage(stream *rlp.Stream) (uint64, error) {
 }
 
 func getSignature(hash *[]byte) []byte {
-	//TODO signatur
 	return []byte{1, 2, 3}
 }
 
