@@ -181,7 +181,7 @@ func readEstimatedSizeMessage(stream *rlp.Stream) (uint64, error) {
 	return parseUint, nil
 }
 
-func getSignature(hash *[]byte) []byte {
+func getSignature() []byte {
 	return []byte{1, 2, 3}
 }
 
