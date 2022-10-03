@@ -27,6 +27,7 @@ type OverheadMessage struct {
 	//	progress? total size then estimate
 }
 
+//bundle of items
 type BundleOfItems struct {
 	Finished  bool
 	Hash      []byte
